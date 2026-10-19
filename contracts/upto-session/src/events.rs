@@ -22,6 +22,14 @@ pub struct SellerExposureCeilingUpdated {
 }
 
 #[contractevent]
+pub struct MaxBuyerOpenSessionsUpdated {
+    pub admin: Address,
+    pub previous_limit: u32,
+    pub new_limit: u32,
+    pub event_version: u32,
+}
+
+#[contractevent]
 pub struct AssetDeprecated {
     #[topic]
     pub asset: Address,
@@ -162,6 +170,21 @@ pub fn publish_seller_exposure_ceiling_updated(
         admin: admin.clone(),
         previous_ceiling,
         new_ceiling,
+        event_version: 1,
+    }
+    .publish(env);
+}
+
+pub fn publish_max_buyer_open_sessions_updated(
+    env: &Env,
+    admin: &Address,
+    previous_limit: u32,
+    new_limit: u32,
+) {
+    MaxBuyerOpenSessionsUpdated {
+        admin: admin.clone(),
+        previous_limit,
+        new_limit,
         event_version: 1,
     }
     .publish(env);

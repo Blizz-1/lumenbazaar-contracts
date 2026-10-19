@@ -41,6 +41,8 @@ pub enum ContractError {
     AssetLiabilityOutstanding = 35,
     SellerExposureCeilingExceeded = 36,
     SellerExposureCeilingNotConfigured = 37,
+    BuyerOpenSessionsExceeded = 38,
+    InvalidSessionCountLimit = 39,
 }
 
 #[cfg(test)]
@@ -86,5 +88,7 @@ mod tests {
         assert_eq!(ContractError::AssetLiabilityOutstanding as u32, 35);
         assert_eq!(ContractError::SellerExposureCeilingExceeded as u32, 36);
         assert_eq!(ContractError::SellerExposureCeilingNotConfigured as u32, 37);
+        assert_eq!(ContractError::BuyerOpenSessionsExceeded as u32, 38);
+        assert_eq!(ContractError::InvalidSessionCountLimit as u32, 39);
     }
 }

@@ -20,6 +20,8 @@ pub enum DataKey {
     Liability(Address),
     SellerExposureCeiling(Address),
     SellerExposure(Address, Address),
+    MaxBuyerOpenSessions,
+    BuyerOpenSessions(Address),
 }
 
 pub fn write_storage_layout_version(env: &Env) {
@@ -205,6 +207,45 @@ pub fn decrease_seller_exposure(
     Ok(updated)
 }
 
+pub fn write_max_buyer_open_sessions(env: &Env, limit: u32) {
+    env.storage()
+        .instance()
+        .set(&DataKey::MaxBuyerOpenSessions, &limit);
+}
+
+pub fn read_max_buyer_open_sessions(env: &Env) -> Option<u32> {
+    env.storage().instance().get(&DataKey::MaxBuyerOpenSessions)
+}
+
+pub fn read_buyer_open_sessions(env: &Env, buyer: &Address) -> u32 {
+    env.storage()
+        .persistent()
+        .get(&DataKey::BuyerOpenSessions(buyer.clone()))
+        .unwrap_or(0)
+}
+
+pub fn increment_buyer_open_sessions(env: &Env, buyer: &Address) -> Result<u32, ContractError> {
+    let current = read_buyer_open_sessions(env, buyer);
+    let updated = current
+        .checked_add(1)
+        .ok_or(ContractError::LiabilityOverflow)?;
+    env.storage()
+        .persistent()
+        .set(&DataKey::BuyerOpenSessions(buyer.clone()), &updated);
+    Ok(updated)
+}
+
+pub fn decrement_buyer_open_sessions(env: &Env, buyer: &Address) -> Result<u32, ContractError> {
+    let current = read_buyer_open_sessions(env, buyer);
+    let updated = current
+        .checked_sub(1)
+        .ok_or(ContractError::LiabilityUnderflow)?;
+    env.storage()
+        .persistent()
+        .set(&DataKey::BuyerOpenSessions(buyer.clone()), &updated);
+    Ok(updated)
+}
+
 pub fn read_admin(env: &Env) -> Option<Address> {
     env.storage().instance().get(&DataKey::Admin)
 }
@@ -249,6 +290,14 @@ pub fn extend_session_and_liability_ttl(env: &Env, session: &Session) {
     if env.storage().persistent().has(&exposure_key) {
         env.storage().persistent().extend_ttl(
             &exposure_key,
+            DEFAULT_TTL_THRESHOLD,
+            TTL_EXTENSION_AMOUNT,
+        );
+    }
+    let buyer_key = DataKey::BuyerOpenSessions(session.buyer.clone());
+    if env.storage().persistent().has(&buyer_key) {
+        env.storage().persistent().extend_ttl(
+            &buyer_key,
             DEFAULT_TTL_THRESHOLD,
             TTL_EXTENSION_AMOUNT,
         );
