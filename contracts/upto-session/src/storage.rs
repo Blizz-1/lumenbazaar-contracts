@@ -22,6 +22,8 @@ pub enum DataKey {
     SellerExposure(Address, Address),
     MaxBuyerOpenSessions,
     BuyerOpenSessions(Address),
+    MaxSellerOpenSessions,
+    SellerOpenSessions(Address),
 }
 
 pub fn write_storage_layout_version(env: &Env) {
@@ -246,6 +248,47 @@ pub fn decrement_buyer_open_sessions(env: &Env, buyer: &Address) -> Result<u32, 
     Ok(updated)
 }
 
+pub fn write_max_seller_open_sessions(env: &Env, limit: u32) {
+    env.storage()
+        .instance()
+        .set(&DataKey::MaxSellerOpenSessions, &limit);
+}
+
+pub fn read_max_seller_open_sessions(env: &Env) -> Option<u32> {
+    env.storage()
+        .instance()
+        .get(&DataKey::MaxSellerOpenSessions)
+}
+
+pub fn read_seller_open_sessions(env: &Env, seller: &Address) -> u32 {
+    env.storage()
+        .persistent()
+        .get(&DataKey::SellerOpenSessions(seller.clone()))
+        .unwrap_or(0)
+}
+
+pub fn increment_seller_open_sessions(env: &Env, seller: &Address) -> Result<u32, ContractError> {
+    let current = read_seller_open_sessions(env, seller);
+    let updated = current
+        .checked_add(1)
+        .ok_or(ContractError::LiabilityOverflow)?;
+    env.storage()
+        .persistent()
+        .set(&DataKey::SellerOpenSessions(seller.clone()), &updated);
+    Ok(updated)
+}
+
+pub fn decrement_seller_open_sessions(env: &Env, seller: &Address) -> Result<u32, ContractError> {
+    let current = read_seller_open_sessions(env, seller);
+    let updated = current
+        .checked_sub(1)
+        .ok_or(ContractError::LiabilityUnderflow)?;
+    env.storage()
+        .persistent()
+        .set(&DataKey::SellerOpenSessions(seller.clone()), &updated);
+    Ok(updated)
+}
+
 pub fn read_admin(env: &Env) -> Option<Address> {
     env.storage().instance().get(&DataKey::Admin)
 }
@@ -298,6 +341,14 @@ pub fn extend_session_and_liability_ttl(env: &Env, session: &Session) {
     if env.storage().persistent().has(&buyer_key) {
         env.storage().persistent().extend_ttl(
             &buyer_key,
+            DEFAULT_TTL_THRESHOLD,
+            TTL_EXTENSION_AMOUNT,
+        );
+    }
+    let seller_key = DataKey::SellerOpenSessions(session.seller.clone());
+    if env.storage().persistent().has(&seller_key) {
+        env.storage().persistent().extend_ttl(
+            &seller_key,
             DEFAULT_TTL_THRESHOLD,
             TTL_EXTENSION_AMOUNT,
         );

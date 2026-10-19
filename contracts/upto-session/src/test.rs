@@ -3164,3 +3164,69 @@ fn buyer_open_session_limits_enforces_boundaries_and_maintains_isolation() {
     assert_eq!(results.len(), 1);
     assert_eq!(client.get_buyer_open_sessions(&buyer_2), 0);
 }
+
+#[test]
+fn seller_open_session_limits_enforces_boundaries_and_maintains_isolation() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(UptoSessionContract, ());
+    let client = UptoSessionContractClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let buyer = Address::generate(&env);
+    let seller_1 = Address::generate(&env);
+    let seller_2 = Address::generate(&env);
+    let asset = create_test_asset(&env, &buyer, 10_000);
+
+    let policies = soroban_sdk::vec![&env, asset_policy(&asset, 1_000)];
+    client.initialize(&admin, &policies);
+
+    // Limit seller to at most 2 concurrent open sessions
+    client.set_max_seller_open_sessions(&2);
+    assert_eq!(client.get_max_seller_open_sessions(), Some(2));
+    assert_eq!(client.get_seller_open_sessions(&seller_1), 0);
+    assert_eq!(client.get_seller_open_sessions(&seller_2), 0);
+
+    let resource_hash = BytesN::from_array(&env, &[1; 32]);
+    let usage_hash = BytesN::from_array(&env, &[2; 32]);
+
+    // Seller 1 receives 1st session -> count = 1
+    let s1_sess1 = client.create_session(&buyer, &seller_1, &asset, &100, &100, &resource_hash);
+    assert_eq!(client.get_seller_open_sessions(&seller_1), 1);
+    assert_eq!(client.get_seller_open_sessions(&seller_2), 0);
+
+    // Seller 1 receives 2nd session -> count = 2 (exact limit succeeds)
+    let s1_sess2 = client.create_session(&buyer, &seller_1, &asset, &100, &100, &resource_hash);
+    assert_eq!(client.get_seller_open_sessions(&seller_1), 2);
+
+    // Limit plus one fails for Seller 1
+    let err = client.try_create_session(&buyer, &seller_1, &asset, &100, &100, &resource_hash);
+    assert_eq!(err, Err(Ok(ContractError::SellerOpenSessionsExceeded)));
+    assert_eq!(client.get_seller_open_sessions(&seller_1), 2);
+
+    // Seller 2 remains independent and can receive sessions up to their limit
+    let s2_sess1 = client.create_session(&buyer, &seller_2, &asset, &100, &100, &resource_hash);
+    assert_eq!(client.get_seller_open_sessions(&seller_2), 1);
+    assert_eq!(client.get_seller_open_sessions(&seller_1), 2);
+
+    // Settlement releases slot for Seller 1
+    client.settle(&s1_sess1, &50, &usage_hash);
+    assert_eq!(client.get_seller_open_sessions(&seller_1), 1);
+
+    // Now Seller 1 can receive another session
+    let s1_sess3 = client.create_session(&buyer, &seller_1, &asset, &100, &100, &resource_hash);
+    assert_eq!(client.get_seller_open_sessions(&seller_1), 2);
+
+    // Cancellation releases slot for Seller 1
+    client.cancel(&s1_sess2);
+    assert_eq!(client.get_seller_open_sessions(&seller_1), 1);
+
+    // Expiry recovery releases slot for Seller 1
+    env.ledger().set_sequence_number(105);
+    client.recover_expired(&s1_sess3);
+    assert_eq!(client.get_seller_open_sessions(&seller_1), 0);
+
+    // Batch recovery releases slot for Seller 2
+    let results = client.recover_expired_batch(&soroban_sdk::vec![&env, s2_sess1]);
+    assert_eq!(results.len(), 1);
+    assert_eq!(client.get_seller_open_sessions(&seller_2), 0);
+}
