@@ -544,6 +544,82 @@ impl UptoSessionContract {
         Ok(())
     }
 
+    pub fn reduce_session_cap(
+        env: Env,
+        session_id: BytesN<32>,
+        new_max_amount: i128,
+    ) -> Result<(), ContractError> {
+        let mut session =
+            storage::read_session(&env, &session_id).ok_or(ContractError::SessionNotFound)?;
+
+        match &session.status {
+            SessionStatus::Open => {}
+            SessionStatus::Settled => return Err(ContractError::SessionAlreadySettled),
+            SessionStatus::Cancelled => return Err(ContractError::SessionCancelled),
+            SessionStatus::Expired => return Err(ContractError::SessionExpired),
+        }
+
+        if env.ledger().sequence() >= session.expires_at_ledger {
+            return Err(ContractError::ExpiredSession);
+        }
+
+        if new_max_amount <= 0 || new_max_amount >= session.max_amount {
+            return Err(ContractError::InvalidCapReduction);
+        }
+
+        session.buyer.require_auth();
+
+        let previous_max_amount = session.max_amount;
+        let refund_difference = previous_max_amount - new_max_amount;
+        let asset = token::Client::new(&env, &session.asset);
+        let contract = env.current_contract_address();
+
+        if session.escrowed_amount != previous_max_amount
+            || asset.balance(&contract) < storage::read_liability(&env, &session.asset)
+        {
+            return Err(ContractError::EscrowUnderfunded);
+        }
+
+        let contract_balance_before = asset.balance(&contract);
+        let buyer_balance_before = asset.balance(&session.buyer);
+
+        storage::decrease_liability(&env, &session.asset, refund_difference)?;
+        storage::decrease_seller_exposure(
+            &env,
+            &session.seller,
+            &session.asset,
+            refund_difference,
+        )?;
+        asset.transfer(&contract, &session.buyer, &refund_difference);
+
+        verify_debit(
+            contract_balance_before,
+            asset.balance(&contract),
+            refund_difference,
+        )?;
+        verify_credit(
+            buyer_balance_before,
+            asset.balance(&session.buyer),
+            refund_difference,
+        )?;
+
+        session.max_amount = new_max_amount;
+        session.escrowed_amount = new_max_amount;
+        storage::write_session(&env, &session);
+
+        events::publish_session_cap_reduced(
+            &env,
+            &session_id,
+            &session.buyer,
+            &session.asset,
+            previous_max_amount,
+            new_max_amount,
+            refund_difference,
+        );
+
+        Ok(())
+    }
+
     pub fn recover_expired(env: Env, session_id: BytesN<32>) -> Result<(), ContractError> {
         let mut session =
             storage::read_session(&env, &session_id).ok_or(ContractError::SessionNotFound)?;

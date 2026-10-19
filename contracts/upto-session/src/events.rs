@@ -123,6 +123,18 @@ pub struct SessionCancelled {
 }
 
 #[contractevent]
+pub struct SessionCapReduced {
+    #[topic]
+    pub session_id: BytesN<32>,
+    pub buyer: Address,
+    pub asset: Address,
+    pub previous_max_amount: i128,
+    pub new_max_amount: i128,
+    pub refunded_amount: i128,
+    pub event_version: u32,
+}
+
+#[contractevent]
 pub struct SessionRecovered {
     #[topic]
     pub session_id: BytesN<32>,
@@ -311,6 +323,27 @@ pub fn publish_session_cancelled(
         asset: asset.clone(),
         event_version: 2,
         refunded_amount,
+    }
+    .publish(env);
+}
+
+pub fn publish_session_cap_reduced(
+    env: &Env,
+    session_id: &BytesN<32>,
+    buyer: &Address,
+    asset: &Address,
+    previous_max_amount: i128,
+    new_max_amount: i128,
+    refunded_amount: i128,
+) {
+    SessionCapReduced {
+        session_id: session_id.clone(),
+        buyer: buyer.clone(),
+        asset: asset.clone(),
+        previous_max_amount,
+        new_max_amount,
+        refunded_amount,
+        event_version: 1,
     }
     .publish(env);
 }

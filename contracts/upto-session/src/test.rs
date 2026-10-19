@@ -3230,3 +3230,76 @@ fn seller_open_session_limits_enforces_boundaries_and_maintains_isolation() {
     assert_eq!(results.len(), 1);
     assert_eq!(client.get_seller_open_sessions(&seller_2), 0);
 }
+
+#[test]
+fn reduce_session_cap_lowers_cap_refunds_buyer_and_reduces_liability() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(UptoSessionContract, ());
+    let client = UptoSessionContractClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let buyer = Address::generate(&env);
+    let seller = Address::generate(&env);
+    let asset = create_test_asset(&env, &buyer, 10_000);
+    let token = token::Client::new(&env, &asset);
+
+    let policies = soroban_sdk::vec![&env, asset_policy(&asset, 1_000)];
+    client.initialize(&admin, &policies);
+    client.set_seller_exposure_ceiling(&asset, &2_000);
+
+    let resource_hash = BytesN::from_array(&env, &[1; 32]);
+    let usage_hash = BytesN::from_array(&env, &[2; 32]);
+
+    // Create session for 1,000
+    let session_id = client.create_session(&buyer, &seller, &asset, &1_000, &100, &resource_hash);
+    assert_eq!(token.balance(&buyer), 9_000);
+    assert_eq!(client.get_escrow_liability(&asset), 1_000);
+    assert_eq!(client.get_seller_exposure(&seller, &asset), 1_000);
+
+    // Reducing cap to >= current cap or <= 0 fails
+    let err_increase = client.try_reduce_session_cap(&session_id, &1_200);
+    assert_eq!(err_increase, Err(Ok(ContractError::InvalidCapReduction)));
+
+    let err_same = client.try_reduce_session_cap(&session_id, &1_000);
+    assert_eq!(err_same, Err(Ok(ContractError::InvalidCapReduction)));
+
+    let err_zero = client.try_reduce_session_cap(&session_id, &0);
+    assert_eq!(err_zero, Err(Ok(ContractError::InvalidCapReduction)));
+
+    // Valid reduction from 1,000 to 600
+    // Refunds 400 to buyer, reduces liability and seller exposure to 600
+    client.reduce_session_cap(&session_id, &600);
+    assert_eq!(token.balance(&buyer), 9_400);
+    assert_eq!(client.get_escrow_liability(&asset), 600);
+    assert_eq!(client.get_seller_exposure(&seller, &asset), 600);
+
+    let session = client.get_session(&session_id);
+    assert_eq!(session.max_amount, 600);
+    assert_eq!(session.escrowed_amount, 600);
+    assert_eq!(session.seller, seller);
+    assert_eq!(session.resource_hash, resource_hash);
+    assert_eq!(session.expires_at_ledger, 100);
+
+    // Repeated reduction: reduce from 600 to 400
+    client.reduce_session_cap(&session_id, &400);
+    assert_eq!(token.balance(&buyer), 9_600);
+    assert_eq!(client.get_escrow_liability(&asset), 400);
+    assert_eq!(client.get_seller_exposure(&seller, &asset), 400);
+
+    // Settle with actual amount 350 <= 400
+    client.settle(&session_id, &350, &usage_hash);
+    assert_eq!(token.balance(&seller), 350);
+    assert_eq!(token.balance(&buyer), 9_650); // 9,600 + 50 refund
+    assert_eq!(client.get_escrow_liability(&asset), 0);
+    assert_eq!(client.get_seller_exposure(&seller, &asset), 0);
+
+    // Terminal session (Settled) reduction must fail
+    let err_settled = client.try_reduce_session_cap(&session_id, &200);
+    assert_eq!(err_settled, Err(Ok(ContractError::SessionAlreadySettled)));
+
+    // Expired session reduction must fail
+    let s2_id = client.create_session(&buyer, &seller, &asset, &500, &50, &resource_hash);
+    env.ledger().set_sequence_number(55);
+    let err_expired = client.try_reduce_session_cap(&s2_id, &300);
+    assert_eq!(err_expired, Err(Ok(ContractError::ExpiredSession)));
+}
