@@ -18,6 +18,8 @@ pub enum DataKey {
     SupportedAssets,
     OperationalState,
     Liability(Address),
+    SellerExposureCeiling(Address),
+    SellerExposure(Address, Address),
 }
 
 pub fn write_storage_layout_version(env: &Env) {
@@ -149,6 +151,60 @@ pub fn decrease_liability(env: &Env, asset: &Address, amount: i128) -> Result<i1
     Ok(updated)
 }
 
+pub fn write_seller_exposure_ceiling(env: &Env, asset: &Address, ceiling: i128) {
+    env.storage()
+        .instance()
+        .set(&DataKey::SellerExposureCeiling(asset.clone()), &ceiling);
+}
+
+pub fn read_seller_exposure_ceiling(env: &Env, asset: &Address) -> Option<i128> {
+    env.storage()
+        .instance()
+        .get(&DataKey::SellerExposureCeiling(asset.clone()))
+}
+
+pub fn read_seller_exposure(env: &Env, seller: &Address, asset: &Address) -> i128 {
+    env.storage()
+        .persistent()
+        .get(&DataKey::SellerExposure(seller.clone(), asset.clone()))
+        .unwrap_or(0)
+}
+
+pub fn increase_seller_exposure(
+    env: &Env,
+    seller: &Address,
+    asset: &Address,
+    amount: i128,
+) -> Result<i128, ContractError> {
+    let current = read_seller_exposure(env, seller, asset);
+    let updated = current
+        .checked_add(amount)
+        .ok_or(ContractError::LiabilityOverflow)?;
+    env.storage().persistent().set(
+        &DataKey::SellerExposure(seller.clone(), asset.clone()),
+        &updated,
+    );
+    Ok(updated)
+}
+
+pub fn decrease_seller_exposure(
+    env: &Env,
+    seller: &Address,
+    asset: &Address,
+    amount: i128,
+) -> Result<i128, ContractError> {
+    let current = read_seller_exposure(env, seller, asset);
+    let updated = current
+        .checked_sub(amount)
+        .filter(|value| *value >= 0)
+        .ok_or(ContractError::LiabilityUnderflow)?;
+    env.storage().persistent().set(
+        &DataKey::SellerExposure(seller.clone(), asset.clone()),
+        &updated,
+    );
+    Ok(updated)
+}
+
 pub fn read_admin(env: &Env) -> Option<Address> {
     env.storage().instance().get(&DataKey::Admin)
 }
@@ -185,6 +241,14 @@ pub fn extend_session_and_liability_ttl(env: &Env, session: &Session) {
     if env.storage().persistent().has(&liability_key) {
         env.storage().persistent().extend_ttl(
             &liability_key,
+            DEFAULT_TTL_THRESHOLD,
+            TTL_EXTENSION_AMOUNT,
+        );
+    }
+    let exposure_key = DataKey::SellerExposure(session.seller.clone(), session.asset.clone());
+    if env.storage().persistent().has(&exposure_key) {
+        env.storage().persistent().extend_ttl(
+            &exposure_key,
             DEFAULT_TTL_THRESHOLD,
             TTL_EXTENSION_AMOUNT,
         );
