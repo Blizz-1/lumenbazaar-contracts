@@ -1,5 +1,9 @@
 extern crate std;
 
+mod mutation_harness {
+    include!("mutation_test.rs");
+}
+
 use super::*;
 use soroban_sdk::{
     testutils::{Address as _, Ledger as _},
