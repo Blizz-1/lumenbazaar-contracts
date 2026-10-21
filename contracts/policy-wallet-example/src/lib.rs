@@ -12,6 +12,7 @@ pub enum DataKey {
     DailySpend(Address, u32),
     DailySellerSpend(Address, Address, u32),
     DailyResourceSpend(Address, BytesN<32>, u32),
+    DailyAuthCount(Address, u32),
 }
 
 #[contracttype]
@@ -45,6 +46,7 @@ pub struct SpendingPolicy {
     pub agent: Address,
     pub max_amount_per_payment: i128,
     pub max_amount_per_day: i128,
+    pub max_authorizations_per_day: u32,
     pub valid_from_ledger: u32,
     pub valid_until_ledger: u32,
     pub allowed_sellers: Vec<Address>,
@@ -70,6 +72,7 @@ pub enum PolicyWalletError {
     AssetNotAllowed = 10,
     ResourceHashNotAllowed = 11,
     PolicyNotActive = 12,
+    AuthorizationLimitExceeded = 13,
 }
 
 #[contract]
@@ -148,6 +151,15 @@ impl PolicyWalletExampleContract {
         validate_payment(&env, &agent, &seller, &asset, amount, &resource_hash)?;
 
         let ledger_day = current_ledger_day(&env);
+        let auth_count = read_daily_auth_count(&env, &agent, ledger_day);
+        let next_auth_count = auth_count
+            .checked_add(1)
+            .ok_or(PolicyWalletError::AuthorizationLimitExceeded)?;
+        env.storage().instance().set(
+            &DataKey::DailyAuthCount(agent.clone(), ledger_day),
+            &next_auth_count,
+        );
+
         let spent = read_daily_spend(&env, &agent, ledger_day);
         let next_spent = spent
             .checked_add(amount)
@@ -189,6 +201,10 @@ impl PolicyWalletExampleContract {
         read_daily_resource_spend(&env, &agent, &resource_hash, current_ledger_day(&env))
     }
 
+    pub fn authorized_count_today(env: Env, agent: Address) -> u32 {
+        read_daily_auth_count(&env, &agent, current_ledger_day(&env))
+    }
+
     pub fn example_only(_env: Env) -> bool {
         true
     }
@@ -216,6 +232,7 @@ fn read_policy(env: &Env, agent: &Address) -> Result<SpendingPolicy, PolicyWalle
 fn validate_policy(env: &Env, policy: &SpendingPolicy) -> Result<(), PolicyWalletError> {
     if policy.max_amount_per_payment <= 0
         || policy.max_amount_per_day <= 0
+        || policy.max_authorizations_per_day == 0
         || policy.max_amount_per_payment > policy.max_amount_per_day
         || policy.valid_from_ledger > policy.valid_until_ledger
         || policy.allowed_sellers.is_empty()
@@ -312,6 +329,11 @@ fn validate_payment(
     }
 
     let ledger_day = current_ledger_day(env);
+    let auth_count = read_daily_auth_count(env, agent, ledger_day);
+    if auth_count >= policy.max_authorizations_per_day {
+        return Err(PolicyWalletError::AuthorizationLimitExceeded);
+    }
+
     let spent = read_daily_spend(env, agent, ledger_day);
     let next_spent = spent
         .checked_add(amount)
@@ -388,6 +410,13 @@ fn read_daily_resource_spend(
             resource_hash.clone(),
             ledger_day,
         ))
+        .unwrap_or(0)
+}
+
+fn read_daily_auth_count(env: &Env, agent: &Address, ledger_day: u32) -> u32 {
+    env.storage()
+        .instance()
+        .get(&DataKey::DailyAuthCount(agent.clone(), ledger_day))
         .unwrap_or(0)
 }
 

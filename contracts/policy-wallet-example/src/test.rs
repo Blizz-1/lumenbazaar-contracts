@@ -64,6 +64,7 @@ fn standard_policy(
         agent: agent.clone(),
         max_amount_per_payment: 75,
         max_amount_per_day: 100,
+        max_authorizations_per_day: 100,
         valid_from_ledger: 0,
         valid_until_ledger,
         allowed_sellers: vec![env, seller.clone()],
@@ -268,6 +269,7 @@ fn rejects_invalid_or_expired_policy_windows() {
             agent: agent.clone(),
             max_amount_per_payment: 0,
             max_amount_per_day: 100,
+            max_authorizations_per_day: 10,
             valid_from_ledger: 0,
             valid_until_ledger: 100,
             allowed_sellers: vec![&env, seller.clone()],
@@ -283,6 +285,23 @@ fn rejects_invalid_or_expired_policy_windows() {
             agent: agent.clone(),
             max_amount_per_payment: 10,
             max_amount_per_day: 100,
+            max_authorizations_per_day: 0,
+            valid_from_ledger: 0,
+            valid_until_ledger: 100,
+            allowed_sellers: vec![&env, seller.clone()],
+            allowed_assets: vec![&env, asset.clone()],
+            allowed_resource_hashes: vec![&env, resource_hash.clone()],
+            seller_limits: vec![&env],
+            resource_limits: vec![&env],
+        }),
+        Err(Ok(PolicyWalletError::InvalidPolicy))
+    );
+    assert_eq!(
+        client.try_set_policy(&SpendingPolicy {
+            agent: agent.clone(),
+            max_amount_per_payment: 10,
+            max_amount_per_day: 100,
+            max_authorizations_per_day: 10,
             valid_from_ledger: 101,
             valid_until_ledger: 100,
             allowed_sellers: vec![&env, seller.clone()],
@@ -298,6 +317,7 @@ fn rejects_invalid_or_expired_policy_windows() {
             agent,
             max_amount_per_payment: 10,
             max_amount_per_day: 100,
+            max_authorizations_per_day: 10,
             valid_from_ledger: 0,
             valid_until_ledger: 0,
             allowed_sellers: vec![&env, seller],
@@ -890,4 +910,110 @@ fn per_resource_spending_ceilings_isolation_and_replacement() {
         .try_authorize_payment(&agent, &seller, &asset, &25, &resource_a)
         .is_ok());
     assert_eq!(client.spent_today_resource(&agent, &resource_a), 25);
+}
+
+#[test]
+fn documentation_authorization_limit_example_reports_limit_exceeded() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, agent, seller, asset, _owner, resource_hash) = initialized_wallet(&env);
+    let mut policy = standard_policy(&env, &agent, &seller, &asset, &resource_hash, 100);
+    policy.max_authorizations_per_day = 1;
+    client.set_policy(&policy);
+
+    // 1st authorization succeeds
+    assert!(client
+        .try_authorize_payment(&agent, &seller, &asset, &10, &resource_hash)
+        .is_ok());
+    assert_eq!(client.authorized_count_today(&agent), 1);
+
+    // 2nd authorization exceeds the daily count limit of 1
+    assert_eq!(
+        client.try_authorize_payment(&agent, &seller, &asset, &10, &resource_hash),
+        Err(Ok(PolicyWalletError::AuthorizationLimitExceeded))
+    );
+}
+
+#[test]
+fn authorization_limit_isolation_and_rollover() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, agent_a, seller, asset, _owner, resource_hash) = initialized_wallet(&env);
+    let agent_b = Address::generate(&env);
+    let wrong_seller = Address::generate(&env);
+
+    // Setup policy for Agent A: limit 2 authorizations per day
+    let mut policy_a = standard_policy(&env, &agent_a, &seller, &asset, &resource_hash, 100_000);
+    policy_a.max_authorizations_per_day = 2;
+    client.set_policy(&policy_a);
+
+    // Setup policy for Agent B: limit 2 authorizations per day
+    let mut policy_b = standard_policy(&env, &agent_b, &seller, &asset, &resource_hash, 100_000);
+    policy_b.agent = agent_b.clone();
+    policy_b.max_authorizations_per_day = 2;
+    client.set_policy(&policy_b);
+
+    // Initial count is 0
+    assert_eq!(client.authorized_count_today(&agent_a), 0);
+    assert_eq!(client.authorized_count_today(&agent_b), 0);
+
+    // check_payment does NOT increment count
+    assert!(client
+        .try_check_payment(&agent_a, &seller, &asset, &10, &resource_hash)
+        .is_ok());
+    assert_eq!(client.authorized_count_today(&agent_a), 0);
+
+    // Failed authorizations do NOT increment count
+    assert_eq!(
+        client.try_authorize_payment(&agent_a, &wrong_seller, &asset, &10, &resource_hash),
+        Err(Ok(PolicyWalletError::SellerNotAllowed))
+    );
+    assert_eq!(client.authorized_count_today(&agent_a), 0);
+
+    assert_eq!(
+        client.try_authorize_payment(&agent_a, &seller, &asset, &999, &resource_hash),
+        Err(Ok(PolicyWalletError::AmountExceedsPaymentCap))
+    );
+    assert_eq!(client.authorized_count_today(&agent_a), 0);
+
+    // First successful authorization increments count to 1
+    client.authorize_payment(&agent_a, &seller, &asset, &10, &resource_hash);
+    assert_eq!(client.authorized_count_today(&agent_a), 1);
+    assert_eq!(client.authorized_count_today(&agent_b), 0);
+
+    // Second successful authorization reaches exact limit of 2
+    client.authorize_payment(&agent_a, &seller, &asset, &10, &resource_hash);
+    assert_eq!(client.authorized_count_today(&agent_a), 2);
+    assert_eq!(client.authorized_count_today(&agent_b), 0);
+
+    // Third attempt fails with AuthorizationLimitExceeded and count remains 2
+    assert_eq!(
+        client.try_authorize_payment(&agent_a, &seller, &asset, &10, &resource_hash),
+        Err(Ok(PolicyWalletError::AuthorizationLimitExceeded))
+    );
+    assert_eq!(client.authorized_count_today(&agent_a), 2);
+
+    // check_payment also reports AuthorizationLimitExceeded
+    assert_eq!(
+        client.try_check_payment(&agent_a, &seller, &asset, &10, &resource_hash),
+        Err(Ok(PolicyWalletError::AuthorizationLimitExceeded))
+    );
+
+    // Multi-agent isolation: Agent B is completely unaffected by Agent A's limit
+    assert!(client
+        .try_authorize_payment(&agent_b, &seller, &asset, &15, &resource_hash)
+        .is_ok());
+    assert_eq!(client.authorized_count_today(&agent_b), 1);
+    assert_eq!(client.authorized_count_today(&agent_a), 2);
+
+    // Day rollover: advance ledger sequence into next day
+    env.ledger().set_sequence_number(LEDGERS_PER_DAY + 1);
+    assert_eq!(client.authorized_count_today(&agent_a), 0);
+    assert_eq!(client.authorized_count_today(&agent_b), 0);
+
+    // Agent A can now authorize again on the new day
+    assert!(client
+        .try_authorize_payment(&agent_a, &seller, &asset, &10, &resource_hash)
+        .is_ok());
+    assert_eq!(client.authorized_count_today(&agent_a), 1);
 }

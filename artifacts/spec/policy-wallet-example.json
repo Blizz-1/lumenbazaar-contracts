@@ -56,6 +56,22 @@
           "doc": "",
           "name": "agent",
           "type": "address"
+        }
+      ],
+      "name": "authorized_count_today",
+      "outputs": [
+        "u32"
+      ]
+    }
+  },
+  {
+    "function_v0": {
+      "doc": "",
+      "inputs": [
+        {
+          "doc": "",
+          "name": "agent",
+          "type": "address"
         },
         {
           "doc": "",
@@ -361,6 +377,11 @@
           "doc": "",
           "name": "PolicyNotActive",
           "value": 12
+        },
+        {
+          "doc": "",
+          "name": "AuthorizationLimitExceeded",
+          "value": 13
         }
       ],
       "doc": "",
@@ -469,6 +490,11 @@
           "doc": "",
           "name": "max_amount_per_payment",
           "type": "i128"
+        },
+        {
+          "doc": "",
+          "name": "max_authorizations_per_day",
+          "type": "u32"
         },
         {
           "doc": "",

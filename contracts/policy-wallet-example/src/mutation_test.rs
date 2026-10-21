@@ -55,6 +55,7 @@ fn make_policy(
         agent: agent.clone(),
         max_amount_per_payment: max_per_payment,
         max_amount_per_day: max_per_day,
+        max_authorizations_per_day: 100,
         valid_from_ledger: 0,
         valid_until_ledger,
         allowed_sellers: vec![env, seller.clone()],
