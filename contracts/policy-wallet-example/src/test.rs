@@ -70,6 +70,7 @@ fn standard_policy(
         allowed_assets: vec![env, asset.clone()],
         allowed_resource_hashes: vec![env, resource_hash.clone()],
         seller_limits: vec![env],
+        resource_limits: vec![env],
     }
 }
 
@@ -273,6 +274,7 @@ fn rejects_invalid_or_expired_policy_windows() {
             allowed_assets: vec![&env, asset.clone()],
             allowed_resource_hashes: vec![&env, resource_hash.clone()],
             seller_limits: vec![&env],
+            resource_limits: vec![&env],
         }),
         Err(Ok(PolicyWalletError::InvalidPolicy))
     );
@@ -287,6 +289,7 @@ fn rejects_invalid_or_expired_policy_windows() {
             allowed_assets: vec![&env, asset.clone()],
             allowed_resource_hashes: vec![&env, resource_hash.clone()],
             seller_limits: vec![&env],
+            resource_limits: vec![&env],
         }),
         Err(Ok(PolicyWalletError::InvalidPolicy))
     );
@@ -301,6 +304,7 @@ fn rejects_invalid_or_expired_policy_windows() {
             allowed_assets: vec![&env, asset],
             allowed_resource_hashes: vec![&env, resource_hash],
             seller_limits: vec![&env],
+            resource_limits: vec![&env],
         }),
         Err(Ok(PolicyWalletError::PolicyExpired))
     );
@@ -658,4 +662,232 @@ fn per_seller_spending_ceilings_and_isolation() {
         .try_authorize_payment(&agent, &seller_a, &asset, &30, &resource_hash)
         .is_ok());
     assert_eq!(client.spent_today_seller(&agent, &seller_a), 30);
+}
+
+#[test]
+fn documentation_resource_payment_cap_example_reports_amount_cap() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, agent, seller, asset, _owner, resource_hash) = initialized_wallet(&env);
+    let mut policy = standard_policy(&env, &agent, &seller, &asset, &resource_hash, 100);
+    policy.resource_limits = vec![
+        &env,
+        ResourceSpendingLimit {
+            resource_hash: resource_hash.clone(),
+            max_amount_per_payment: 25,
+            max_amount_per_day: 40,
+        },
+    ];
+    client.set_policy(&policy);
+
+    assert_eq!(
+        client.try_check_payment(&agent, &seller, &asset, &30, &resource_hash),
+        Err(Ok(PolicyWalletError::AmountExceedsPaymentCap))
+    );
+}
+
+#[test]
+fn documentation_resource_daily_cap_example_reports_daily_cap() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, agent, seller, asset, _owner, resource_a) = initialized_wallet(&env);
+    let resource_b = BytesN::from_array(&env, &[99; 32]);
+
+    let mut policy = standard_policy(&env, &agent, &seller, &asset, &resource_a, 100);
+    policy.allowed_resource_hashes = vec![&env, resource_a.clone(), resource_b.clone()];
+    policy.resource_limits = vec![
+        &env,
+        ResourceSpendingLimit {
+            resource_hash: resource_a.clone(),
+            max_amount_per_payment: 25,
+            max_amount_per_day: 40,
+        },
+    ];
+    client.set_policy(&policy);
+
+    // Spend 25 then 15 on resource A -> exactly reaches 40 daily limit
+    client.authorize_payment(&agent, &seller, &asset, &25, &resource_a);
+    client.authorize_payment(&agent, &seller, &asset, &15, &resource_a);
+    assert_eq!(client.spent_today_resource(&agent, &resource_a), 40);
+
+    // Further spend on resource A is rejected
+    assert_eq!(
+        client.try_authorize_payment(&agent, &seller, &asset, &5, &resource_a),
+        Err(Ok(PolicyWalletError::AmountExceedsDailyCap))
+    );
+
+    // Resource B spend is isolated and succeeds up to global daily cap
+    assert!(client
+        .try_authorize_payment(&agent, &seller, &asset, &30, &resource_b)
+        .is_ok());
+    assert_eq!(client.spent_today_resource(&agent, &resource_b), 30);
+    assert_eq!(client.spent_today(&agent), 70);
+}
+
+#[test]
+fn per_resource_spending_ceilings_isolation_and_replacement() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, agent, seller, asset, _owner, resource_a) = initialized_wallet(&env);
+    let resource_b = BytesN::from_array(&env, &[99; 32]);
+    let unknown_resource = BytesN::from_array(&env, &[77; 32]);
+
+    // 1. Resource ceiling cannot exceed global payment cap
+    let mut invalid_policy = standard_policy(&env, &agent, &seller, &asset, &resource_a, 100);
+    invalid_policy.resource_limits = vec![
+        &env,
+        ResourceSpendingLimit {
+            resource_hash: resource_a.clone(),
+            max_amount_per_payment: 80, // > 75
+            max_amount_per_day: 90,
+        },
+    ];
+    assert_eq!(
+        client.try_set_policy(&invalid_policy),
+        Err(Ok(PolicyWalletError::InvalidPolicy))
+    );
+
+    // 2. Resource ceiling cannot exceed global daily cap
+    let mut invalid_policy2 = standard_policy(&env, &agent, &seller, &asset, &resource_a, 100);
+    invalid_policy2.resource_limits = vec![
+        &env,
+        ResourceSpendingLimit {
+            resource_hash: resource_a.clone(),
+            max_amount_per_payment: 50,
+            max_amount_per_day: 120, // > 100
+        },
+    ];
+    assert_eq!(
+        client.try_set_policy(&invalid_policy2),
+        Err(Ok(PolicyWalletError::InvalidPolicy))
+    );
+
+    // 3. Unknown resource in resource_limits
+    let mut invalid_policy3 = standard_policy(&env, &agent, &seller, &asset, &resource_a, 100);
+    invalid_policy3.resource_limits = vec![
+        &env,
+        ResourceSpendingLimit {
+            resource_hash: unknown_resource,
+            max_amount_per_payment: 50,
+            max_amount_per_day: 50,
+        },
+    ];
+    assert_eq!(
+        client.try_set_policy(&invalid_policy3),
+        Err(Ok(PolicyWalletError::InvalidPolicy))
+    );
+
+    // 4. Duplicate resource in resource_limits
+    let mut invalid_policy4 = standard_policy(&env, &agent, &seller, &asset, &resource_a, 100);
+    invalid_policy4.resource_limits = vec![
+        &env,
+        ResourceSpendingLimit {
+            resource_hash: resource_a.clone(),
+            max_amount_per_payment: 25,
+            max_amount_per_day: 50,
+        },
+        ResourceSpendingLimit {
+            resource_hash: resource_a.clone(),
+            max_amount_per_payment: 20,
+            max_amount_per_day: 40,
+        },
+    ];
+    assert_eq!(
+        client.try_set_policy(&invalid_policy4),
+        Err(Ok(PolicyWalletError::InvalidPolicy))
+    );
+
+    // 5. Valid policy with resource A and B ceilings
+    let mut valid_policy = standard_policy(&env, &agent, &seller, &asset, &resource_a, 100_000);
+    valid_policy.allowed_resource_hashes = vec![&env, resource_a.clone(), resource_b.clone()];
+    valid_policy.resource_limits = vec![
+        &env,
+        ResourceSpendingLimit {
+            resource_hash: resource_a.clone(),
+            max_amount_per_payment: 25,
+            max_amount_per_day: 40,
+        },
+        ResourceSpendingLimit {
+            resource_hash: resource_b.clone(),
+            max_amount_per_payment: 35,
+            max_amount_per_day: 50,
+        },
+    ];
+    client.set_policy(&valid_policy);
+
+    // Exact per-payment boundary for resource A
+    assert!(client
+        .try_check_payment(&agent, &seller, &asset, &25, &resource_a)
+        .is_ok());
+    assert_eq!(
+        client.try_check_payment(&agent, &seller, &asset, &26, &resource_a),
+        Err(Ok(PolicyWalletError::AmountExceedsPaymentCap))
+    );
+
+    // Authorize payments to exact daily boundary for resource A
+    client.authorize_payment(&agent, &seller, &asset, &25, &resource_a);
+    client.authorize_payment(&agent, &seller, &asset, &15, &resource_a);
+    assert_eq!(client.spent_today_resource(&agent, &resource_a), 40);
+    assert_eq!(client.spent_today_resource(&agent, &resource_b), 0);
+
+    // Exceeding daily boundary fails
+    assert_eq!(
+        client.try_authorize_payment(&agent, &seller, &asset, &1, &resource_a),
+        Err(Ok(PolicyWalletError::AmountExceedsDailyCap))
+    );
+
+    // Counters isolated across resources: resource B can spend
+    client.authorize_payment(&agent, &seller, &asset, &35, &resource_b);
+    assert_eq!(client.spent_today_resource(&agent, &resource_b), 35);
+    assert_eq!(client.spent_today(&agent), 75);
+
+    // 6. Policy replacement semantics:
+    // Replace with a policy with a lower cap for resource A (e.g. 30 daily cap).
+    // Historical spend (40) is preserved and exceeds the new cap (40 > 30).
+    let mut lower_cap_policy = standard_policy(&env, &agent, &seller, &asset, &resource_a, 100_000);
+    lower_cap_policy.allowed_resource_hashes = vec![&env, resource_a.clone(), resource_b.clone()];
+    lower_cap_policy.resource_limits = vec![
+        &env,
+        ResourceSpendingLimit {
+            resource_hash: resource_a.clone(),
+            max_amount_per_payment: 25,
+            max_amount_per_day: 30, // lower than 40 already spent
+        },
+    ];
+    client.set_policy(&lower_cap_policy);
+    assert_eq!(
+        client.try_authorize_payment(&agent, &seller, &asset, &1, &resource_a),
+        Err(Ok(PolicyWalletError::AmountExceedsDailyCap))
+    );
+
+    // Replace with a higher cap for resource A (e.g. 60 daily cap).
+    let mut higher_cap_policy =
+        standard_policy(&env, &agent, &seller, &asset, &resource_a, 100_000);
+    higher_cap_policy.allowed_resource_hashes = vec![&env, resource_a.clone(), resource_b.clone()];
+    higher_cap_policy.resource_limits = vec![
+        &env,
+        ResourceSpendingLimit {
+            resource_hash: resource_a.clone(),
+            max_amount_per_payment: 25,
+            max_amount_per_day: 60, // higher than 40 already spent
+        },
+    ];
+    client.set_policy(&higher_cap_policy);
+    // Now can spend 15 more (40 + 15 = 55 <= 60)
+    assert!(client
+        .try_authorize_payment(&agent, &seller, &asset, &15, &resource_a)
+        .is_ok());
+    assert_eq!(client.spent_today_resource(&agent, &resource_a), 55);
+
+    // 7. Day rollover semantics
+    env.ledger().set_sequence_number(LEDGERS_PER_DAY + 10);
+    assert_eq!(client.spent_today_resource(&agent, &resource_a), 0);
+    assert_eq!(client.spent_today_resource(&agent, &resource_b), 0);
+    assert_eq!(client.spent_today(&agent), 0);
+
+    // Spend again on the new day
+    assert!(client
+        .try_authorize_payment(&agent, &seller, &asset, &25, &resource_a)
+        .is_ok());
+    assert_eq!(client.spent_today_resource(&agent, &resource_a), 25);
 }

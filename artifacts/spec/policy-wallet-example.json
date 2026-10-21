@@ -264,6 +264,31 @@
         },
         {
           "doc": "",
+          "name": "resource_hash",
+          "type": {
+            "bytes_n": {
+              "n": 32
+            }
+          }
+        }
+      ],
+      "name": "spent_today_resource",
+      "outputs": [
+        "i128"
+      ]
+    }
+  },
+  {
+    "function_v0": {
+      "doc": "",
+      "inputs": [
+        {
+          "doc": "",
+          "name": "agent",
+          "type": "address"
+        },
+        {
+          "doc": "",
           "name": "seller",
           "type": "address"
         }
@@ -359,6 +384,34 @@
         },
         {
           "doc": "",
+          "name": "resource_hash",
+          "type": {
+            "bytes_n": {
+              "n": 32
+            }
+          }
+        }
+      ],
+      "lib": "",
+      "name": "ResourceSpendingLimit"
+    }
+  },
+  {
+    "udt_struct_v0": {
+      "doc": "",
+      "fields": [
+        {
+          "doc": "",
+          "name": "max_amount_per_day",
+          "type": "i128"
+        },
+        {
+          "doc": "",
+          "name": "max_amount_per_payment",
+          "type": "i128"
+        },
+        {
+          "doc": "",
           "name": "seller",
           "type": "address"
         }
@@ -416,6 +469,19 @@
           "doc": "",
           "name": "max_amount_per_payment",
           "type": "i128"
+        },
+        {
+          "doc": "",
+          "name": "resource_limits",
+          "type": {
+            "vec": {
+              "element_type": {
+                "udt": {
+                  "name": "ResourceSpendingLimit"
+                }
+              }
+            }
+          }
         },
         {
           "doc": "",
