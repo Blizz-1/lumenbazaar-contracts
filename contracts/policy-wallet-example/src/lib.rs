@@ -27,6 +27,7 @@ pub struct SpendingPolicy {
     pub agent: Address,
     pub max_amount_per_payment: i128,
     pub max_amount_per_day: i128,
+    pub valid_from_ledger: u32,
     pub valid_until_ledger: u32,
     pub allowed_sellers: Vec<Address>,
     pub allowed_assets: Vec<Address>,
@@ -48,6 +49,7 @@ pub enum PolicyWalletError {
     SellerNotAllowed = 9,
     AssetNotAllowed = 10,
     ResourceHashNotAllowed = 11,
+    PolicyNotActive = 12,
 }
 
 #[contract]
@@ -88,15 +90,7 @@ impl PolicyWalletExampleContract {
 
     pub fn set_policy(env: Env, policy: SpendingPolicy) -> Result<(), PolicyWalletError> {
         require_owner_auth(&env)?;
-        validate_policy(
-            &env,
-            policy.max_amount_per_payment,
-            policy.max_amount_per_day,
-            policy.valid_until_ledger,
-            &policy.allowed_sellers,
-            &policy.allowed_assets,
-            &policy.allowed_resource_hashes,
-        )?;
+        validate_policy(&env, &policy)?;
 
         let agent = policy.agent.clone();
         env.storage()
@@ -173,26 +167,19 @@ fn read_policy(env: &Env, agent: &Address) -> Result<SpendingPolicy, PolicyWalle
         .ok_or(PolicyWalletError::PolicyNotFound)
 }
 
-fn validate_policy(
-    env: &Env,
-    max_amount_per_payment: i128,
-    max_amount_per_day: i128,
-    valid_until_ledger: u32,
-    allowed_sellers: &Vec<Address>,
-    allowed_assets: &Vec<Address>,
-    allowed_resource_hashes: &Vec<BytesN<32>>,
-) -> Result<(), PolicyWalletError> {
-    if max_amount_per_payment <= 0
-        || max_amount_per_day <= 0
-        || max_amount_per_payment > max_amount_per_day
-        || allowed_sellers.is_empty()
-        || allowed_assets.is_empty()
-        || allowed_resource_hashes.is_empty()
+fn validate_policy(env: &Env, policy: &SpendingPolicy) -> Result<(), PolicyWalletError> {
+    if policy.max_amount_per_payment <= 0
+        || policy.max_amount_per_day <= 0
+        || policy.max_amount_per_payment > policy.max_amount_per_day
+        || policy.valid_from_ledger > policy.valid_until_ledger
+        || policy.allowed_sellers.is_empty()
+        || policy.allowed_assets.is_empty()
+        || policy.allowed_resource_hashes.is_empty()
     {
         return Err(PolicyWalletError::InvalidPolicy);
     }
 
-    if valid_until_ledger <= env.ledger().sequence() {
+    if policy.valid_until_ledger <= env.ledger().sequence() {
         return Err(PolicyWalletError::PolicyExpired);
     }
 
@@ -209,6 +196,9 @@ fn validate_payment(
 ) -> Result<(), PolicyWalletError> {
     let policy = read_policy(env, agent)?;
 
+    if env.ledger().sequence() < policy.valid_from_ledger {
+        return Err(PolicyWalletError::PolicyNotActive);
+    }
     if env.ledger().sequence() > policy.valid_until_ledger {
         return Err(PolicyWalletError::PolicyExpired);
     }

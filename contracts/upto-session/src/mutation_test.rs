@@ -38,12 +38,12 @@ fn stellar_asset(env: &Env, owner: &Address, amount: i128) -> Address {
     asset
 }
 
-fn initialized_contract(
-    env: &Env,
+fn initialized_contract<'a>(
+    env: &'a Env,
     buyer: &Address,
     asset: &Address,
     cap: i128,
-) -> (Address, UptoSessionContractClient<'_>) {
+) -> (Address, UptoSessionContractClient<'a>) {
     let admin = buyer.clone(); // admin == buyer keeps explicit auth trees simple
     let contract = env.register(UptoSessionContract, ());
     let client = UptoSessionContractClient::new(env, &contract);
@@ -69,6 +69,7 @@ fn initialized_contract(
 }
 
 /// Create a session using an explicit buyer authorization tree (no mock_all_auths).
+#[allow(clippy::too_many_arguments)]
 fn create_with_buyer_auth(
     env: &Env,
     client: &UptoSessionContractClient<'_>,

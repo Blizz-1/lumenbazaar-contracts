@@ -64,6 +64,7 @@ fn standard_policy(
         agent: agent.clone(),
         max_amount_per_payment: 75,
         max_amount_per_day: 100,
+        valid_from_ledger: 0,
         valid_until_ledger,
         allowed_sellers: vec![env, seller.clone()],
         allowed_assets: vec![env, asset.clone()],
@@ -265,6 +266,20 @@ fn rejects_invalid_or_expired_policy_windows() {
             agent: agent.clone(),
             max_amount_per_payment: 0,
             max_amount_per_day: 100,
+            valid_from_ledger: 0,
+            valid_until_ledger: 100,
+            allowed_sellers: vec![&env, seller.clone()],
+            allowed_assets: vec![&env, asset.clone()],
+            allowed_resource_hashes: vec![&env, resource_hash.clone()],
+        }),
+        Err(Ok(PolicyWalletError::InvalidPolicy))
+    );
+    assert_eq!(
+        client.try_set_policy(&SpendingPolicy {
+            agent: agent.clone(),
+            max_amount_per_payment: 10,
+            max_amount_per_day: 100,
+            valid_from_ledger: 101,
             valid_until_ledger: 100,
             allowed_sellers: vec![&env, seller.clone()],
             allowed_assets: vec![&env, asset.clone()],
@@ -277,12 +292,100 @@ fn rejects_invalid_or_expired_policy_windows() {
             agent,
             max_amount_per_payment: 10,
             max_amount_per_day: 100,
+            valid_from_ledger: 0,
             valid_until_ledger: 0,
             allowed_sellers: vec![&env, seller],
             allowed_assets: vec![&env, asset],
             allowed_resource_hashes: vec![&env, resource_hash],
         }),
         Err(Ok(PolicyWalletError::PolicyExpired))
+    );
+}
+
+#[test]
+fn documentation_pre_activation_policy_example_reports_not_active() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, agent, seller, asset, _owner, resource_hash) = initialized_wallet(&env);
+    let mut policy = standard_policy(&env, &agent, &seller, &asset, &resource_hash, 100);
+    policy.valid_from_ledger = 50;
+    client.set_policy(&policy);
+
+    env.ledger().set_sequence_number(49);
+
+    assert_eq!(
+        client.try_check_payment(&agent, &seller, &asset, &50, &resource_hash),
+        Err(Ok(PolicyWalletError::PolicyNotActive))
+    );
+    assert_eq!(
+        client.try_authorize_payment(&agent, &seller, &asset, &50, &resource_hash),
+        Err(Ok(PolicyWalletError::PolicyNotActive))
+    );
+    assert_eq!(client.spent_today(&agent), 0);
+}
+
+#[test]
+fn pre_activation_and_u32_boundary_checks() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (client, agent, seller, asset, _owner, resource_hash) = initialized_wallet(&env);
+
+    // 1. Invalid range where valid_from_ledger > valid_until_ledger
+    let mut invalid_policy = standard_policy(&env, &agent, &seller, &asset, &resource_hash, 50);
+    invalid_policy.valid_from_ledger = 51;
+    assert_eq!(
+        client.try_set_policy(&invalid_policy),
+        Err(Ok(PolicyWalletError::InvalidPolicy))
+    );
+
+    // 2. Single-ledger valid window where valid_from_ledger == valid_until_ledger
+    let mut single_ledger_policy =
+        standard_policy(&env, &agent, &seller, &asset, &resource_hash, 100);
+    single_ledger_policy.valid_from_ledger = 100;
+    client.set_policy(&single_ledger_policy);
+
+    // Before activation
+    env.ledger().set_sequence_number(99);
+    assert_eq!(
+        client.try_check_payment(&agent, &seller, &asset, &50, &resource_hash),
+        Err(Ok(PolicyWalletError::PolicyNotActive))
+    );
+
+    // Exactly at valid_from_ledger == valid_until_ledger (inclusive on both ends)
+    env.ledger().set_sequence_number(100);
+    assert!(client
+        .try_authorize_payment(&agent, &seller, &asset, &50, &resource_hash)
+        .is_ok());
+    assert_eq!(client.spent_today(&agent), 50);
+
+    // After expiration
+    env.ledger().set_sequence_number(101);
+    assert_eq!(
+        client.try_check_payment(&agent, &seller, &asset, &50, &resource_hash),
+        Err(Ok(PolicyWalletError::PolicyExpired))
+    );
+
+    // 3. u32 boundary values: 0 and u32::MAX
+    let mut max_u32_policy =
+        standard_policy(&env, &agent, &seller, &asset, &resource_hash, u32::MAX);
+    max_u32_policy.valid_from_ledger = 0;
+    client.set_policy(&max_u32_policy);
+
+    env.ledger().set_sequence_number(500);
+    assert!(client
+        .try_check_payment(&agent, &seller, &asset, &50, &resource_hash)
+        .is_ok());
+
+    // Policy with valid_from_ledger at u32::MAX
+    let mut future_max_policy =
+        standard_policy(&env, &agent, &seller, &asset, &resource_hash, u32::MAX);
+    future_max_policy.valid_from_ledger = u32::MAX;
+    client.set_policy(&future_max_policy);
+
+    // Current sequence is 500, far below u32::MAX
+    assert_eq!(
+        client.try_check_payment(&agent, &seller, &asset, &50, &resource_hash),
+        Err(Ok(PolicyWalletError::PolicyNotActive))
     );
 }
 

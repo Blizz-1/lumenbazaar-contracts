@@ -40,6 +40,7 @@ fn register_and_init(env: &Env) -> (PolicyWalletExampleContractClient<'_>, Addre
     (client, contract_id, owner)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn make_policy(
     env: &Env,
     agent: &Address,
@@ -54,6 +55,7 @@ fn make_policy(
         agent: agent.clone(),
         max_amount_per_payment: max_per_payment,
         max_amount_per_day: max_per_day,
+        valid_from_ledger: 0,
         valid_until_ledger,
         allowed_sellers: vec![env, seller.clone()],
         allowed_assets: vec![env, asset.clone()],
@@ -81,6 +83,7 @@ fn set_policy_with_owner_auth(
         .set_policy(&policy);
 }
 
+#[allow(clippy::too_many_arguments)]
 fn authorize_payment_with_agent_auth(
     env: &Env,
     client: &PolicyWalletExampleContractClient<'_>,
@@ -180,7 +183,7 @@ fn mutation_owner_auth_wrong_party_in_initialize_is_caught() {
 #[test]
 fn mutation_owner_auth_removal_in_set_policy_is_caught() {
     let env = Env::default();
-    let (client, contract_id, _owner) = register_and_init(&env);
+    let (client, _contract_id, _owner) = register_and_init(&env);
     let agent = Address::generate(&env);
     let seller = Address::generate(&env);
     let asset = Address::generate(&env);
@@ -278,6 +281,7 @@ fn mutation_agent_auth_removal_in_authorize_payment_is_caught() {
     let asset2 = Address::generate(&env2);
     let rh2 = BytesN::from_array(&env2, &[0xc2; 32]);
 
+    let upto_session2 = Address::generate(&env2);
     // Initialize and set policy using explicit auths.
     client2
         .mock_auths(&[MockAuth {
@@ -285,11 +289,11 @@ fn mutation_agent_auth_removal_in_authorize_payment_is_caught() {
             invoke: &MockAuthInvoke {
                 contract: &contract_id2,
                 fn_name: "initialize",
-                args: (owner2.clone(), Address::generate(&env2)).into_val(&env2),
+                args: (owner2.clone(), upto_session2.clone()).into_val(&env2),
                 sub_invokes: &[],
             },
         }])
-        .initialize(&owner2, &Address::generate(&env2));
+        .initialize(&owner2, &upto_session2);
 
     let policy2 = make_policy(&env2, &agent2, &seller2, &asset2, &rh2, 50, 100, 100);
     client2
@@ -334,17 +338,18 @@ fn mutation_agent_auth_wrong_party_in_authorize_payment_is_caught() {
     let asset = Address::generate(&env);
     let resource_hash = BytesN::from_array(&env, &[0xc3; 32]);
 
+    let upto_session = Address::generate(&env);
     client
         .mock_auths(&[MockAuth {
             address: &owner,
             invoke: &MockAuthInvoke {
                 contract: &contract_id,
                 fn_name: "initialize",
-                args: (owner.clone(), Address::generate(&env)).into_val(&env),
+                args: (owner.clone(), upto_session.clone()).into_val(&env),
                 sub_invokes: &[],
             },
         }])
-        .initialize(&owner, &Address::generate(&env));
+        .initialize(&owner, &upto_session);
 
     let policy = make_policy(&env, &agent, &seller, &asset, &resource_hash, 50, 100, 100);
     client
@@ -402,17 +407,18 @@ fn mutation_payment_cap_inversion_is_caught() {
     let asset = Address::generate(&env);
     let resource_hash = BytesN::from_array(&env, &[0xd1; 32]);
 
+    let upto_session = Address::generate(&env);
     client
         .mock_auths(&[MockAuth {
             address: &owner,
             invoke: &MockAuthInvoke {
                 contract: &contract_id,
                 fn_name: "initialize",
-                args: (owner.clone(), Address::generate(&env)).into_val(&env),
+                args: (owner.clone(), upto_session.clone()).into_val(&env),
                 sub_invokes: &[],
             },
         }])
-        .initialize(&owner, &Address::generate(&env));
+        .initialize(&owner, &upto_session);
 
     let policy = make_policy(&env, &agent, &seller, &asset, &resource_hash, 75, 200, 100);
     client
@@ -461,17 +467,18 @@ fn mutation_daily_cap_inversion_is_caught() {
     let asset = Address::generate(&env);
     let resource_hash = BytesN::from_array(&env, &[0xe1; 32]);
 
+    let upto_session = Address::generate(&env);
     client
         .mock_auths(&[MockAuth {
             address: &owner,
             invoke: &MockAuthInvoke {
                 contract: &contract_id,
                 fn_name: "initialize",
-                args: (owner.clone(), Address::generate(&env)).into_val(&env),
+                args: (owner.clone(), upto_session.clone()).into_val(&env),
                 sub_invokes: &[],
             },
         }])
-        .initialize(&owner, &Address::generate(&env));
+        .initialize(&owner, &upto_session);
 
     // max_per_payment = 60, max_per_day = 100.
     let policy = make_policy(&env, &agent, &seller, &asset, &resource_hash, 60, 100, 100);
@@ -538,17 +545,18 @@ fn mutation_daily_cap_exact_boundary_succeeds() {
     let asset = Address::generate(&env);
     let resource_hash = BytesN::from_array(&env, &[0xe2; 32]);
 
+    let upto_session = Address::generate(&env);
     client
         .mock_auths(&[MockAuth {
             address: &owner,
             invoke: &MockAuthInvoke {
                 contract: &contract_id,
                 fn_name: "initialize",
-                args: (owner.clone(), Address::generate(&env)).into_val(&env),
+                args: (owner.clone(), upto_session.clone()).into_val(&env),
                 sub_invokes: &[],
             },
         }])
-        .initialize(&owner, &Address::generate(&env));
+        .initialize(&owner, &upto_session);
 
     let policy = make_policy(&env, &agent, &seller, &asset, &resource_hash, 100, 100, 100);
     client
@@ -593,17 +601,18 @@ fn mutation_policy_expiry_check_inversion_is_caught() {
     let asset = Address::generate(&env);
     let resource_hash = BytesN::from_array(&env, &[0xf1; 32]);
 
+    let upto_session = Address::generate(&env);
     client
         .mock_auths(&[MockAuth {
             address: &owner,
             invoke: &MockAuthInvoke {
                 contract: &contract_id,
                 fn_name: "initialize",
-                args: (owner.clone(), Address::generate(&env)).into_val(&env),
+                args: (owner.clone(), upto_session.clone()).into_val(&env),
                 sub_invokes: &[],
             },
         }])
-        .initialize(&owner, &Address::generate(&env));
+        .initialize(&owner, &upto_session);
 
     // Policy valid until ledger 10.
     let policy = make_policy(&env, &agent, &seller, &asset, &resource_hash, 50, 100, 10);
@@ -642,17 +651,18 @@ fn mutation_policy_expiry_check_at_boundary_succeeds() {
     let asset = Address::generate(&env);
     let resource_hash = BytesN::from_array(&env, &[0xf2; 32]);
 
+    let upto_session = Address::generate(&env);
     client
         .mock_auths(&[MockAuth {
             address: &owner,
             invoke: &MockAuthInvoke {
                 contract: &contract_id,
                 fn_name: "initialize",
-                args: (owner.clone(), Address::generate(&env)).into_val(&env),
+                args: (owner.clone(), upto_session.clone()).into_val(&env),
                 sub_invokes: &[],
             },
         }])
-        .initialize(&owner, &Address::generate(&env));
+        .initialize(&owner, &upto_session);
 
     let policy = make_policy(&env, &agent, &seller, &asset, &resource_hash, 50, 100, 10);
     client
@@ -693,17 +703,18 @@ fn mutation_authorize_payment_must_record_daily_spend() {
     let asset = Address::generate(&env);
     let resource_hash = BytesN::from_array(&env, &[0x71; 32]);
 
+    let upto_session = Address::generate(&env);
     client
         .mock_auths(&[MockAuth {
             address: &owner,
             invoke: &MockAuthInvoke {
                 contract: &contract_id,
                 fn_name: "initialize",
-                args: (owner.clone(), Address::generate(&env)).into_val(&env),
+                args: (owner.clone(), upto_session.clone()).into_val(&env),
                 sub_invokes: &[],
             },
         }])
-        .initialize(&owner, &Address::generate(&env));
+        .initialize(&owner, &upto_session);
 
     let policy = make_policy(&env, &agent, &seller, &asset, &resource_hash, 60, 100, 100);
     client
@@ -754,17 +765,18 @@ fn mutation_end_to_end_policy_wallet_guards_are_all_present() {
         client.try_initialize(&owner, &Address::generate(&env)).is_err(),
         "owner auth not enforced for initialize"
     );
+    let upto_session = Address::generate(&env);
     client
         .mock_auths(&[MockAuth {
             address: &owner,
             invoke: &MockAuthInvoke {
                 contract: &contract_id,
                 fn_name: "initialize",
-                args: (owner.clone(), Address::generate(&env)).into_val(&env),
+                args: (owner.clone(), upto_session.clone()).into_val(&env),
                 sub_invokes: &[],
             },
         }])
-        .initialize(&owner, &Address::generate(&env));
+        .initialize(&owner, &upto_session);
 
     // 2. set_policy requires owner auth.
     let policy = make_policy(&env, &agent, &seller, &asset, &resource_hash, 50, 100, 100);
@@ -819,8 +831,14 @@ fn mutation_end_to_end_policy_wallet_guards_are_all_present() {
     );
     assert_eq!(client.spent_today(&agent), 50);
 
+    // Authorize another 50 to reach the exact daily cap of 100.
+    authorize_payment_with_agent_auth(
+        &env, &client, &contract_id, &agent, &seller, &asset, 50, &resource_hash,
+    );
+    assert_eq!(client.spent_today(&agent), 100);
+
     // 7. Daily cap prevents overspend.
-    // 50 spent; daily cap 100; another 51 would total 101 > 100.
+    // 100 spent; daily cap 100; another 1 would total 101 > 100.
     let over_daily = client
         .mock_auths(&[MockAuth {
             address: &agent,
@@ -831,19 +849,118 @@ fn mutation_end_to_end_policy_wallet_guards_are_all_present() {
                     agent.clone(),
                     seller.clone(),
                     asset.clone(),
-                    51_i128,
+                    1_i128,
                     resource_hash.clone(),
                 )
                     .into_val(&env),
                 sub_invokes: &[],
             },
         }])
-        .try_authorize_payment(&agent, &seller, &asset, &51, &resource_hash);
+        .try_authorize_payment(&agent, &seller, &asset, &1, &resource_hash);
     assert_eq!(
         over_daily,
         Err(Ok(PolicyWalletError::AmountExceedsDailyCap)),
         "daily cap not enforced after partial spend"
     );
     // Spend must not have changed.
-    assert_eq!(client.spent_today(&agent), 50);
+    assert_eq!(client.spent_today(&agent), 100);
+}
+
+/// A payment before `valid_from_ledger` must be rejected with PolicyNotActive.
+#[test]
+fn mutation_policy_activation_check_before_boundary_is_caught() {
+    let env = Env::default();
+    let contract_id = env.register(PolicyWalletExampleContract, ());
+    let client = PolicyWalletExampleContractClient::new(&env, &contract_id);
+    let owner = Address::generate(&env);
+    let agent = Address::generate(&env);
+    let seller = Address::generate(&env);
+    let asset = Address::generate(&env);
+    let resource_hash = BytesN::from_array(&env, &[0xfa; 32]);
+
+    let upto_session = Address::generate(&env);
+    client
+        .mock_auths(&[MockAuth {
+            address: &owner,
+            invoke: &MockAuthInvoke {
+                contract: &contract_id,
+                fn_name: "initialize",
+                args: (owner.clone(), upto_session.clone()).into_val(&env),
+                sub_invokes: &[],
+            },
+        }])
+        .initialize(&owner, &upto_session);
+
+    let mut policy = make_policy(&env, &agent, &seller, &asset, &resource_hash, 50, 100, 100);
+    policy.valid_from_ledger = 50;
+    client
+        .mock_auths(&[MockAuth {
+            address: &owner,
+            invoke: &MockAuthInvoke {
+                contract: &contract_id,
+                fn_name: "set_policy",
+                args: (policy.clone(),).into_val(&env),
+                sub_invokes: &[],
+            },
+        }])
+        .set_policy(&policy);
+
+    // At ledger 49 (< valid_from_ledger 50) — must be rejected.
+    env.ledger().set_sequence_number(49);
+    let result = client.try_check_payment(&agent, &seller, &asset, &30, &resource_hash);
+
+    assert_eq!(
+        result,
+        Err(Ok(PolicyWalletError::PolicyNotActive)),
+        "MUTATION SURVIVED: policy activation check did not fire at ledger < valid_from_ledger"
+    );
+}
+
+/// At valid_from_ledger itself, check_payment must succeed.
+#[test]
+fn mutation_policy_activation_check_at_boundary_succeeds() {
+    let env = Env::default();
+    let contract_id = env.register(PolicyWalletExampleContract, ());
+    let client = PolicyWalletExampleContractClient::new(&env, &contract_id);
+    let owner = Address::generate(&env);
+    let agent = Address::generate(&env);
+    let seller = Address::generate(&env);
+    let asset = Address::generate(&env);
+    let resource_hash = BytesN::from_array(&env, &[0xfb; 32]);
+
+    let upto_session = Address::generate(&env);
+    client
+        .mock_auths(&[MockAuth {
+            address: &owner,
+            invoke: &MockAuthInvoke {
+                contract: &contract_id,
+                fn_name: "initialize",
+                args: (owner.clone(), upto_session.clone()).into_val(&env),
+                sub_invokes: &[],
+            },
+        }])
+        .initialize(&owner, &upto_session);
+
+    let mut policy = make_policy(&env, &agent, &seller, &asset, &resource_hash, 50, 100, 100);
+    policy.valid_from_ledger = 50;
+    client
+        .mock_auths(&[MockAuth {
+            address: &owner,
+            invoke: &MockAuthInvoke {
+                contract: &contract_id,
+                fn_name: "set_policy",
+                args: (policy.clone(),).into_val(&env),
+                sub_invokes: &[],
+            },
+        }])
+        .set_policy(&policy);
+
+    // At valid_from_ledger itself — must succeed (inclusive boundary).
+    env.ledger().set_sequence_number(50);
+    assert!(
+        client
+            .try_check_payment(&agent, &seller, &asset, &30, &resource_hash)
+            .is_ok(),
+        "check_payment was incorrectly rejected at ledger == valid_from_ledger"
+    );
 }

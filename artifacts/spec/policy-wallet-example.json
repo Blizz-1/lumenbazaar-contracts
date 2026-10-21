@@ -310,6 +310,11 @@
           "doc": "",
           "name": "ResourceHashNotAllowed",
           "value": 11
+        },
+        {
+          "doc": "",
+          "name": "PolicyNotActive",
+          "value": 12
         }
       ],
       "doc": "",
@@ -366,6 +371,11 @@
           "doc": "",
           "name": "max_amount_per_payment",
           "type": "i128"
+        },
+        {
+          "doc": "",
+          "name": "valid_from_ledger",
+          "type": "u32"
         },
         {
           "doc": "",
