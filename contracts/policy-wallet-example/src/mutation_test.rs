@@ -60,6 +60,7 @@ fn make_policy(
         allowed_sellers: vec![env, seller.clone()],
         allowed_assets: vec![env, asset.clone()],
         allowed_resource_hashes: vec![env, resource_hash.clone()],
+        seller_limits: vec![env],
     }
 }
 

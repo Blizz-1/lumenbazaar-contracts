@@ -254,6 +254,27 @@
     }
   },
   {
+    "function_v0": {
+      "doc": "",
+      "inputs": [
+        {
+          "doc": "",
+          "name": "agent",
+          "type": "address"
+        },
+        {
+          "doc": "",
+          "name": "seller",
+          "type": "address"
+        }
+      ],
+      "name": "spent_today_seller",
+      "outputs": [
+        "i128"
+      ]
+    }
+  },
+  {
     "udt_error_enum_v0": {
       "cases": [
         {
@@ -328,6 +349,30 @@
       "fields": [
         {
           "doc": "",
+          "name": "max_amount_per_day",
+          "type": "i128"
+        },
+        {
+          "doc": "",
+          "name": "max_amount_per_payment",
+          "type": "i128"
+        },
+        {
+          "doc": "",
+          "name": "seller",
+          "type": "address"
+        }
+      ],
+      "lib": "",
+      "name": "SellerSpendingLimit"
+    }
+  },
+  {
+    "udt_struct_v0": {
+      "doc": "",
+      "fields": [
+        {
+          "doc": "",
           "name": "agent",
           "type": "address"
         },
@@ -371,6 +416,19 @@
           "doc": "",
           "name": "max_amount_per_payment",
           "type": "i128"
+        },
+        {
+          "doc": "",
+          "name": "seller_limits",
+          "type": {
+            "vec": {
+              "element_type": {
+                "udt": {
+                  "name": "SellerSpendingLimit"
+                }
+              }
+            }
+          }
         },
         {
           "doc": "",

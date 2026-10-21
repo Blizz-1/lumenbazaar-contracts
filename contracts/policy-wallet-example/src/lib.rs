@@ -10,6 +10,15 @@ pub enum DataKey {
     Config,
     Policy(Address),
     DailySpend(Address, u32),
+    DailySellerSpend(Address, Address, u32),
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SellerSpendingLimit {
+    pub seller: Address,
+    pub max_amount_per_payment: i128,
+    pub max_amount_per_day: i128,
 }
 
 #[contracttype]
@@ -32,6 +41,7 @@ pub struct SpendingPolicy {
     pub allowed_sellers: Vec<Address>,
     pub allowed_assets: Vec<Address>,
     pub allowed_resource_hashes: Vec<BytesN<32>>,
+    pub seller_limits: Vec<SellerSpendingLimit>,
 }
 
 #[contracterror]
@@ -134,13 +144,26 @@ impl PolicyWalletExampleContract {
             .ok_or(PolicyWalletError::AmountExceedsDailyCap)?;
         env.storage()
             .instance()
-            .set(&DataKey::DailySpend(agent, ledger_day), &next_spent);
+            .set(&DataKey::DailySpend(agent.clone(), ledger_day), &next_spent);
+
+        let seller_spent = read_daily_seller_spend(&env, &agent, &seller, ledger_day);
+        let next_seller_spent = seller_spent
+            .checked_add(amount)
+            .ok_or(PolicyWalletError::AmountExceedsDailyCap)?;
+        env.storage().instance().set(
+            &DataKey::DailySellerSpend(agent, seller, ledger_day),
+            &next_seller_spent,
+        );
 
         Ok(())
     }
 
     pub fn spent_today(env: Env, agent: Address) -> i128 {
         read_daily_spend(&env, &agent, current_ledger_day(&env))
+    }
+
+    pub fn spent_today_seller(env: Env, agent: Address, seller: Address) -> i128 {
+        read_daily_seller_spend(&env, &agent, &seller, current_ledger_day(&env))
     }
 
     pub fn example_only(_env: Env) -> bool {
@@ -183,6 +206,28 @@ fn validate_policy(env: &Env, policy: &SpendingPolicy) -> Result<(), PolicyWalle
         return Err(PolicyWalletError::PolicyExpired);
     }
 
+    let seller_limits_len = policy.seller_limits.len();
+    for i in 0..seller_limits_len {
+        let limit = policy.seller_limits.get(i).unwrap();
+        if !policy.allowed_sellers.contains(&limit.seller) {
+            return Err(PolicyWalletError::InvalidPolicy);
+        }
+        if limit.max_amount_per_payment <= 0
+            || limit.max_amount_per_day <= 0
+            || limit.max_amount_per_payment > limit.max_amount_per_day
+            || limit.max_amount_per_payment > policy.max_amount_per_payment
+            || limit.max_amount_per_day > policy.max_amount_per_day
+        {
+            return Err(PolicyWalletError::InvalidPolicy);
+        }
+        for j in (i + 1)..seller_limits_len {
+            let other = policy.seller_limits.get(j).unwrap();
+            if limit.seller == other.seller {
+                return Err(PolicyWalletError::InvalidPolicy);
+            }
+        }
+    }
+
     Ok(())
 }
 
@@ -218,12 +263,30 @@ fn validate_payment(
         return Err(PolicyWalletError::ResourceHashNotAllowed);
     }
 
-    let spent = read_daily_spend(env, agent, current_ledger_day(env));
+    let ledger_day = current_ledger_day(env);
+    let spent = read_daily_spend(env, agent, ledger_day);
     let next_spent = spent
         .checked_add(amount)
         .ok_or(PolicyWalletError::AmountExceedsDailyCap)?;
     if next_spent > policy.max_amount_per_day {
         return Err(PolicyWalletError::AmountExceedsDailyCap);
+    }
+
+    for i in 0..policy.seller_limits.len() {
+        let seller_limit = policy.seller_limits.get(i).unwrap();
+        if seller_limit.seller == *seller {
+            if amount > seller_limit.max_amount_per_payment {
+                return Err(PolicyWalletError::AmountExceedsPaymentCap);
+            }
+            let seller_spent = read_daily_seller_spend(env, agent, seller, ledger_day);
+            let next_seller_spent = seller_spent
+                .checked_add(amount)
+                .ok_or(PolicyWalletError::AmountExceedsDailyCap)?;
+            if next_seller_spent > seller_limit.max_amount_per_day {
+                return Err(PolicyWalletError::AmountExceedsDailyCap);
+            }
+            break;
+        }
     }
 
     Ok(())
@@ -233,6 +296,17 @@ fn read_daily_spend(env: &Env, agent: &Address, ledger_day: u32) -> i128 {
     env.storage()
         .instance()
         .get(&DataKey::DailySpend(agent.clone(), ledger_day))
+        .unwrap_or(0)
+}
+
+fn read_daily_seller_spend(env: &Env, agent: &Address, seller: &Address, ledger_day: u32) -> i128 {
+    env.storage()
+        .instance()
+        .get(&DataKey::DailySellerSpend(
+            agent.clone(),
+            seller.clone(),
+            ledger_day,
+        ))
         .unwrap_or(0)
 }
 

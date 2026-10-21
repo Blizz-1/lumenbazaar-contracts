@@ -8,6 +8,8 @@ Spending policy validity boundaries are inclusive: a policy is active for ledger
 | --- | --- | --- |
 | Allowed payment | `documentation_allowed_payment_example_authorizes` | The agent-authorized payment succeeds and increments daily spend. |
 | Blocked payment | `documentation_blocked_payment_example_reports_amount_cap` | A payment over the per-payment cap returns `AmountExceedsPaymentCap`. |
+| Seller payment cap | `documentation_seller_payment_cap_example_reports_amount_cap` | A payment over the seller-specific per-payment cap returns `AmountExceedsPaymentCap`. |
+| Seller daily cap | `documentation_seller_daily_cap_example_reports_daily_cap` | A payment over the seller-specific daily cap returns `AmountExceedsDailyCap` while other sellers remain spendable. |
 | Pre-activation policy | `documentation_pre_activation_policy_example_reports_not_active` | A payment checked before `valid_from_ledger` returns `PolicyNotActive` and leaves spend unchanged. |
 | Expired policy | `documentation_expired_policy_example_reports_expired` | A payment checked after `valid_until_ledger` returns `PolicyExpired`. |
 | Wrong seller | `documentation_wrong_seller_example_reports_seller_error` | A seller outside the allowlist returns `SellerNotAllowed`. |
