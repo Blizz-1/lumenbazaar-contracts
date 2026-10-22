@@ -45,6 +45,8 @@ pub enum ContractError {
     InvalidSessionCountLimit = 39,
     SellerOpenSessionsExceeded = 40,
     InvalidCapReduction = 41,
+    CreationPaused = 36,
+    OperationalStateUnchanged = 37,
 }
 
 #[cfg(test)]
@@ -94,5 +96,7 @@ mod tests {
         assert_eq!(ContractError::InvalidSessionCountLimit as u32, 39);
         assert_eq!(ContractError::SellerOpenSessionsExceeded as u32, 40);
         assert_eq!(ContractError::InvalidCapReduction as u32, 41);
+        assert_eq!(ContractError::CreationPaused as u32, 36);
+        assert_eq!(ContractError::OperationalStateUnchanged as u32, 37);
     }
 }
