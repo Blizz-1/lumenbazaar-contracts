@@ -12,9 +12,11 @@
 //   implements nor relies on.
 
 use super::*;
+use super::authorization_harness::auth_entry_with_expiration;
 use crate::storage::{DataKey, DEFAULT_TTL_THRESHOLD, TTL_EXTENSION_AMOUNT};
 use crate::validation::{MAX_ADMIN_ROTATION_DURATION_LEDGERS, MAX_SESSION_DURATION_LEDGERS};
 use soroban_sdk::testutils::storage::{Instance as _, Persistent as _};
+use soroban_sdk::testutils::{MockAuth, MockAuthInvoke};
 
 /// Ledger at which an entry written at ledger 0 has exactly `DEFAULT_TTL_THRESHOLD` ledgers left.
 const AT_THRESHOLD: u32 = TTL_EXTENSION_AMOUNT - DEFAULT_TTL_THRESHOLD;

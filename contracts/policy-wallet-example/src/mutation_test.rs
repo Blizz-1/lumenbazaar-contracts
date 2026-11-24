@@ -84,6 +84,12 @@ fn set_policy_with_owner_auth(
     owner: &Address,
     policy: SpendingPolicy,
 ) {
+    let rev = client
+        .try_get_policy(&policy.agent)
+        .ok()
+        .and_then(Result::ok)
+        .map(|p| p.revision)
+        .unwrap_or(0);
     client
         .mock_auths(&[MockAuth {
             address: owner,

@@ -206,6 +206,7 @@ fn owner_sets_spending_policy() {
     assert_eq!(policy.allowed_sellers, vec![&env, seller]);
     assert_eq!(policy.allowed_assets, vec![&env, asset]);
     assert_eq!(policy.allowed_resource_hashes, vec![&env, resource_hash]);
+    assert_eq!(policy.revision, 1);
 }
 
 #[test]
