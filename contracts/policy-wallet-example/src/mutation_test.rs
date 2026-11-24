@@ -52,6 +52,7 @@ fn make_policy(
     valid_until_ledger: u32,
 ) -> SpendingPolicy {
     SpendingPolicy {
+        revision: 0,
         agent: agent.clone(),
         max_amount_per_payment: max_per_payment,
         max_amount_per_day: max_per_day,

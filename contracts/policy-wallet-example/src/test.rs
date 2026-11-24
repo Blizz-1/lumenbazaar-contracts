@@ -8,6 +8,10 @@ mod property_harness {
     include!("property_test.rs");
 }
 
+mod panic_free_harness {
+    include!("panic_free_test.rs");
+}
+
 use super::*;
 use soroban_sdk::{
     testutils::{Address as _, Events as _, Ledger as _},

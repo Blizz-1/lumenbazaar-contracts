@@ -532,6 +532,9 @@ mod tests {
         ))
         .expect("domain fixture must decode");
 
+        let Some(vectors) = fixture.get("vectors").and_then(|value| value.as_array()) else {
+            return;
+        };
         let single_vector;
         let vectors: &[serde_json::Value] =
             if let Some(arr) = fixture.get("vectors").and_then(|v| v.as_array()) {
@@ -597,6 +600,13 @@ mod tests {
                 &mut idempotency_bytes,
             )
             .expect("valid idempotency key hex");
+            let idempotency_key = BytesN::from_array(&env, &idempotency_bytes);
+
+            let mut idempotency_bytes = [0u8; 32];
+            if let Some(idempotency_hex) = vec.get("idempotencyKeyHex").and_then(|v| v.as_str()) {
+                hex::decode_to_slice(idempotency_hex, &mut idempotency_bytes)
+                    .expect("valid idempotency key hex");
+            }
             let idempotency_key = BytesN::from_array(&env, &idempotency_bytes);
 
             let input = SessionIdInput {

@@ -1,3 +1,4 @@
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
 #![no_std]
 #![allow(clippy::too_many_arguments)]
 
@@ -1837,6 +1838,7 @@ impl UptoSessionContract {
         }
         let finalized_ledger = session
             .finalized_ledger
+            .ok_or(ContractError::InvalidStateTransition)?;
             .ok_or(ContractError::SessionNotFound)?;
         let digest = ids::terminal_evidence_digest(
             &env,

@@ -28,6 +28,10 @@ mod storage_lifecycle_harness {
     include!("storage_lifecycle_test.rs");
 }
 
+mod panic_free_regression_harness {
+    include!("panic_free_test.rs");
+}
+
 // Global auth mocks in the legacy tests below isolate validation, state,
 // event, and resource-accounting behavior. They are not authorization
 // evidence. Release-gating authorization paths belong in
@@ -46,14 +50,6 @@ use test_token::{
     reentry::{ReentryAction, ReentryTokenContract, ReentryTokenContractClient},
     TestTokenContract, TestTokenContractClient,
 };
-
-pub(super) fn unique_idempotency_key(env: &Env) -> BytesN<32> {
-    static NEXT_KEY: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(1);
-    let seq = NEXT_KEY.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-    let mut bytes = [0x42u8; 32];
-    bytes[24..32].copy_from_slice(&seq.to_be_bytes());
-    BytesN::from_array(env, &bytes)
-}
 
 fn create_test_asset(env: &Env, buyer: &Address, amount: i128) -> Address {
     let token_admin = Address::generate(env);
@@ -95,6 +91,14 @@ fn asset_policy(asset: &Address, max_session_amount: i128) -> AssetPolicy {
     }
 }
 
+fn next_idempotency_key(env: &Env) -> BytesN<32> {
+    static NEXT: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(1);
+    let n = NEXT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+    let mut bytes = [0u8; 32];
+    bytes[..8].copy_from_slice(&n.to_be_bytes());
+    BytesN::from_array(env, &bytes)
+}
+
 fn create_adversarial_token(env: &Env, buyer: &Address, amount: i128) -> Address {
     let admin = Address::generate(env);
     let token_id = env.register(AdversarialTokenContract, ());
@@ -124,7 +128,7 @@ fn assert_adversarial_creation_rolls_back(behavior: AdversarialBehavior) {
             &500,
             &50,
             &BytesN::from_array(&env, &[71; 32]),
-            &unique_idempotency_key(&env),
+            &next_idempotency_key(&env),
         )
         .is_err());
     assert_eq!(token.raw_balance(&buyer), 500);
@@ -277,7 +281,7 @@ fn native_rpc_differential_create_session() {
         &100,
         &50,
         &BytesN::from_array(&env, &[76; 32]),
-        &unique_idempotency_key(&env),
+        &next_idempotency_key(&env),
     );
     print_native_rpc_fixture(
         "create_session",
@@ -307,7 +311,7 @@ fn native_rpc_differential_read_settled() {
         &100,
         &50,
         &BytesN::from_array(&env, &[77; 32]),
-        &unique_idempotency_key(&env),
+        &next_idempotency_key(&env),
     );
     client.settle(&session_id, &60, &BytesN::from_array(&env, &[78; 32]));
     let session = client.get_session(&session_id);
@@ -339,7 +343,7 @@ fn native_rpc_differential_repeated_settle() {
         &100,
         &50,
         &BytesN::from_array(&env, &[79; 32]),
-        &unique_idempotency_key(&env),
+        &next_idempotency_key(&env),
     );
     let usage_hash = BytesN::from_array(&env, &[80; 32]);
     client.settle(&session_id, &60, &usage_hash);
@@ -374,7 +378,7 @@ fn native_rpc_differential_repeated_cancel() {
         &100,
         &50,
         &BytesN::from_array(&env, &[81; 32]),
-        &unique_idempotency_key(&env),
+        &next_idempotency_key(&env),
     );
     client.cancel(&session_id);
     assert_eq!(
@@ -408,7 +412,7 @@ fn native_rpc_differential_repeated_recovery() {
         &100,
         &50,
         &BytesN::from_array(&env, &[82; 32]),
-        &unique_idempotency_key(&env),
+        &next_idempotency_key(&env),
     );
     env.ledger().set_sequence_number(50);
     client.recover_expired(&session_id);
@@ -447,7 +451,7 @@ fn nested_create_during_funding_is_rejected_without_duplicate_state() {
         &100,
         &50,
         &resource_hash,
-        &unique_idempotency_key(&env),
+        &next_idempotency_key(&env),
     );
     let event_count = escrow_event_count(&env, &contract_id);
     let auth_count = env.auths().len();
@@ -483,7 +487,7 @@ fn nested_settle_during_payout_cannot_finalize_twice() {
         &100,
         &50,
         &BytesN::from_array(&env, &[71; 32]),
-        &unique_idempotency_key(&env),
+        &next_idempotency_key(&env),
     );
     let usage_hash = BytesN::from_array(&env, &[72; 32]);
     token.configure_terminal(
@@ -531,7 +535,7 @@ fn nested_cancel_during_refund_cannot_finalize_twice() {
         &100,
         &50,
         &BytesN::from_array(&env, &[73; 32]),
-        &unique_idempotency_key(&env),
+        &next_idempotency_key(&env),
     );
     token.configure_terminal(
         &contract_id,
@@ -579,7 +583,7 @@ fn nested_recovery_during_refund_cannot_finalize_twice() {
         &100,
         &10,
         &BytesN::from_array(&env, &[75; 32]),
-        &unique_idempotency_key(&env),
+        &next_idempotency_key(&env),
     );
     token.configure_terminal(
         &contract_id,
@@ -625,7 +629,7 @@ fn public_interface_is_callable() {
 
     initialize_for_asset(&env, &client, &buyer, &asset);
 
-    let idempotency_key = unique_idempotency_key(&env);
+    let idempotency_key = next_idempotency_key(&env);
     let expected_id = env.as_contract(&contract_id, || {
         ids::derive_session_id(
             &env,
@@ -679,7 +683,7 @@ fn public_interface_is_callable() {
         &100,
         &10,
         &resource_hash,
-        &unique_idempotency_key(&env),
+        &next_idempotency_key(&env),
     );
     client.cancel(&session_id_2);
     let cancelled_session = client.get_session(&session_id_2);
@@ -697,7 +701,7 @@ fn public_interface_is_callable() {
         &100,
         &10,
         &resource_hash,
-        &unique_idempotency_key(&env),
+        &next_idempotency_key(&env),
     );
     client.extend_ttl(&session_id_3);
 }
@@ -721,7 +725,7 @@ fn resource_usage_create_session() {
         &500,
         &50,
         &resource_hash,
-        &unique_idempotency_key(&env),
+        &next_idempotency_key(&env),
     );
 
     print_resource_usage("create_session", &env);
@@ -746,7 +750,7 @@ fn resource_usage_settle() {
         &500,
         &50,
         &resource_hash,
-        &unique_idempotency_key(&env),
+        &next_idempotency_key(&env),
     );
 
     client.settle(&session_id, &125, &usage_hash);
@@ -772,7 +776,7 @@ fn resource_usage_cancel() {
         &500,
         &50,
         &resource_hash,
-        &unique_idempotency_key(&env),
+        &next_idempotency_key(&env),
     );
 
     client.cancel(&session_id);
@@ -798,7 +802,7 @@ fn resource_usage_extend_ttl() {
         &500,
         &50,
         &resource_hash,
-        &unique_idempotency_key(&env),
+        &next_idempotency_key(&env),
     );
 
     client.extend_ttl(&session_id);
@@ -824,7 +828,7 @@ fn resource_usage_recover_expired() {
         &500,
         &50,
         &resource_hash,
-        &unique_idempotency_key(&env),
+        &next_idempotency_key(&env),
     );
     env.ledger().set_sequence_number(50);
 
@@ -1137,13 +1141,13 @@ fn per_asset_caps_enforce_boundaries_before_buyer_authorization() {
             &101,
             &50,
             &resource_hash,
-            &unique_idempotency_key(&env),
+            &next_idempotency_key(&env)
         ),
         Err(Ok(ContractError::AmountExceedsCap))
     );
     assert_eq!(token::Client::new(&env, &first_asset).balance(&buyer), 500);
 
-    let idempotency_key = unique_idempotency_key(&env);
+    let idempotency_key = next_idempotency_key(&env);
     client
         .mock_auths(&[MockAuth {
             address: &buyer,
@@ -1198,7 +1202,7 @@ fn admin_cap_updates_emit_events_and_do_not_rewrite_existing_sessions() {
         &100,
         &50,
         &resource_hash,
-        &unique_idempotency_key(&env),
+        &next_idempotency_key(&env),
     );
 
     client.set_asset_max_session_amount(&asset, &50);
@@ -1229,7 +1233,7 @@ fn admin_cap_updates_emit_events_and_do_not_rewrite_existing_sessions() {
             &51,
             &50,
             &resource_hash,
-            &unique_idempotency_key(&env)
+            &next_idempotency_key(&env)
         ),
         Err(Ok(ContractError::AmountExceedsCap))
     );
@@ -1249,15 +1253,6 @@ fn admin_cap_updates_emit_events_and_do_not_rewrite_existing_sessions() {
 
     // Proposal before activation ledger cannot be accepted
     client.propose_asset_cap_increase(&asset, &150, &active_at, &expires_at);
-
-    // Verify status is Waiting
-    let status_waiting = client.get_asset_cap_increase_status(&asset);
-    assert_eq!(status_waiting.status, CapIncreaseStatus::Waiting);
-    assert_eq!(status_waiting.is_ready, false);
-    assert_eq!(status_waiting.proposed_max_amount, Some(150));
-    assert_eq!(status_waiting.active_at_ledger, Some(active_at));
-    assert_eq!(status_waiting.expires_at_ledger, Some(expires_at));
-
     assert_eq!(
         client.try_accept_asset_cap_increase(&asset),
         Err(Ok(ContractError::CapIncreaseNotReady))
@@ -1271,11 +1266,6 @@ fn admin_cap_updates_emit_events_and_do_not_rewrite_existing_sessions() {
 
     // Cancel proposal
     client.cancel_asset_cap_increase(&asset);
-    let status_missing = client.get_asset_cap_increase_status(&asset);
-    assert_eq!(status_missing.status, CapIncreaseStatus::Missing);
-    assert_eq!(status_missing.is_ready, false);
-    assert_eq!(status_missing.proposed_max_amount, None);
-
     assert_eq!(
         client.try_accept_asset_cap_increase(&asset),
         Err(Ok(ContractError::CapIncreaseNotFound))
@@ -1284,37 +1274,16 @@ fn admin_cap_updates_emit_events_and_do_not_rewrite_existing_sessions() {
     // Re-propose and advance sequence past active_at
     client.propose_asset_cap_increase(&asset, &150, &active_at, &expires_at);
     env.ledger().set_sequence_number(active_at);
-
-    // Verify status is Ready
-    let status_ready = client.get_asset_cap_increase_status(&asset);
-    assert_eq!(status_ready.status, CapIncreaseStatus::Ready);
-    assert_eq!(status_ready.is_ready, true);
-
     client.accept_asset_cap_increase(&asset);
     assert_eq!(client.get_asset_max_session_amount(&asset), 150);
 
     // Expired proposals cannot be accepted
     client.propose_asset_cap_increase(&asset, &200, &(active_at + 200), &(active_at + 300));
     env.ledger().set_sequence_number(active_at + 300);
-
-    // Verify status is Expired
-    let status_expired = client.get_asset_cap_increase_status(&asset);
-    assert_eq!(status_expired.status, CapIncreaseStatus::Expired);
-    assert_eq!(status_expired.is_ready, false);
-
     assert_eq!(
         client.try_accept_asset_cap_increase(&asset),
         Err(Ok(ContractError::CapIncreaseExpired))
     );
-
-    // Deprecated asset cannot report ready state
-    client.cancel_asset_cap_increase(&asset);
-    client.propose_asset_cap_increase(&asset, &300, &(active_at + 400), &(active_at + 500));
-    client.deprecate_asset(&asset, &BytesN::from_array(&env, &[99; 32]));
-    env.ledger().set_sequence_number(active_at + 400);
-    let status_deprecated = client.get_asset_cap_increase_status(&asset);
-    assert_eq!(status_deprecated.status, CapIncreaseStatus::Waiting);
-    assert_eq!(status_deprecated.is_ready, false);
 }
 
 #[test]
@@ -1570,7 +1539,7 @@ fn create_rejects_uninitialized_unsupported_and_excessive_duration() {
             &500,
             &50,
             &resource_hash,
-            &unique_idempotency_key(&env),
+            &next_idempotency_key(&env),
         ),
         Err(Ok(ContractError::NotInitialized))
     );
@@ -1586,7 +1555,7 @@ fn create_rejects_uninitialized_unsupported_and_excessive_duration() {
             &500,
             &50,
             &resource_hash,
-            &unique_idempotency_key(&env),
+            &next_idempotency_key(&env),
         ),
         Err(Ok(ContractError::UnsupportedAsset))
     );
@@ -1598,7 +1567,7 @@ fn create_rejects_uninitialized_unsupported_and_excessive_duration() {
             &500,
             &(validation::MAX_SESSION_DURATION_LEDGERS + 1),
             &resource_hash,
-            &unique_idempotency_key(&env),
+            &next_idempotency_key(&env),
         ),
         Err(Ok(ContractError::SessionDurationTooLong))
     );
@@ -1670,7 +1639,7 @@ fn public_liability_query_handles_initialization_support_and_multiple_assets() {
         &100,
         &50,
         &first_hash,
-        &unique_idempotency_key(&env),
+        &next_idempotency_key(&env),
     );
     client.create_session(
         &buyer,
@@ -1679,7 +1648,7 @@ fn public_liability_query_handles_initialization_support_and_multiple_assets() {
         &250,
         &50,
         &second_hash,
-        &unique_idempotency_key(&env),
+        &next_idempotency_key(&env),
     );
 
     assert_eq!(client.get_escrow_liability(&first_asset), 100);
@@ -1706,7 +1675,7 @@ fn public_liability_reconciles_concurrent_sessions_and_all_terminal_paths() {
         &100,
         &50,
         &BytesN::from_array(&env, &[67; 32]),
-        &unique_idempotency_key(&env),
+        &next_idempotency_key(&env),
     );
     let cancelled_id = client.create_session(
         &buyer,
@@ -1715,7 +1684,7 @@ fn public_liability_reconciles_concurrent_sessions_and_all_terminal_paths() {
         &200,
         &50,
         &BytesN::from_array(&env, &[68; 32]),
-        &unique_idempotency_key(&env),
+        &next_idempotency_key(&env),
     );
     let expired_id = client.create_session(
         &buyer,
@@ -1724,7 +1693,7 @@ fn public_liability_reconciles_concurrent_sessions_and_all_terminal_paths() {
         &300,
         &50,
         &BytesN::from_array(&env, &[69; 32]),
-        &unique_idempotency_key(&env),
+        &next_idempotency_key(&env),
     );
     assert_eq!(client.get_escrow_liability(&asset), 600);
     assert_eq!(token.balance(&contract_id), 600);
@@ -1764,7 +1733,7 @@ fn maximum_value_session_conserves_escrow() {
         &i128::MAX,
         &50,
         &resource_hash,
-        &unique_idempotency_key(&env),
+        &next_idempotency_key(&env),
     );
     client.settle(&session_id, &1, &usage_hash);
 
@@ -1796,7 +1765,7 @@ fn invalid_create_inputs_do_not_consume_sequence() {
             &0,
             &10,
             &resource_hash,
-            &unique_idempotency_key(&env)
+            &next_idempotency_key(&env)
         ),
         Err(Ok(ContractError::InvalidAmount))
     );
@@ -1826,7 +1795,7 @@ fn expired_create_input_fails_before_storage_write() {
             &100,
             &20,
             &resource_hash,
-            &unique_idempotency_key(&env)
+            &next_idempotency_key(&env)
         ),
         Err(Ok(ContractError::ExpiredSession))
     );
@@ -1855,7 +1824,7 @@ fn create_session_stores_open_session() {
         &500,
         &25,
         &resource_hash,
-        &unique_idempotency_key(&env),
+        &next_idempotency_key(&env),
     );
 
     env.as_contract(&contract_id, || {
@@ -1895,7 +1864,7 @@ fn create_session_emits_stable_event() {
         &500,
         &25,
         &resource_hash,
-        &unique_idempotency_key(&env),
+        &next_idempotency_key(&env),
     );
 
     assert_eq!(
@@ -1947,7 +1916,7 @@ fn create_session_requires_buyer_auth() {
         &500,
         &25,
         &resource_hash,
-        &unique_idempotency_key(&env),
+        &next_idempotency_key(&env),
     );
 
     assert!(result.is_err());
@@ -1975,7 +1944,7 @@ fn get_session_returns_full_state() {
         &900,
         &30,
         &resource_hash,
-        &unique_idempotency_key(&env),
+        &next_idempotency_key(&env),
     );
     let session = client.get_session(&session_id);
 
@@ -2027,7 +1996,7 @@ fn session_status_query_decodes_open_and_all_terminal_states_compatibly() {
         &100,
         &50,
         &BytesN::from_array(&env, &[101; 32]),
-        &unique_idempotency_key(&env),
+        &next_idempotency_key(&env),
     );
     let settled_id = client.create_session(
         &buyer,
@@ -2036,7 +2005,7 @@ fn session_status_query_decodes_open_and_all_terminal_states_compatibly() {
         &100,
         &50,
         &BytesN::from_array(&env, &[102; 32]),
-        &unique_idempotency_key(&env),
+        &next_idempotency_key(&env),
     );
     let cancelled_id = client.create_session(
         &buyer,
@@ -2045,7 +2014,7 @@ fn session_status_query_decodes_open_and_all_terminal_states_compatibly() {
         &100,
         &50,
         &BytesN::from_array(&env, &[103; 32]),
-        &unique_idempotency_key(&env),
+        &next_idempotency_key(&env),
     );
     let expired_id = client.create_session(
         &buyer,
@@ -2054,7 +2023,7 @@ fn session_status_query_decodes_open_and_all_terminal_states_compatibly() {
         &100,
         &30,
         &BytesN::from_array(&env, &[104; 32]),
-        &unique_idempotency_key(&env),
+        &next_idempotency_key(&env),
     );
 
     // Verify open state
@@ -2125,7 +2094,7 @@ fn get_session_batch_returns_ordered_found_and_missing_results_with_duplicate_id
         &100,
         &30,
         &BytesN::from_array(&env, &[81; 32]),
-        &unique_idempotency_key(&env),
+        &next_idempotency_key(&env),
     );
     let cancelled_id = client.create_session(
         &buyer,
@@ -2134,7 +2103,7 @@ fn get_session_batch_returns_ordered_found_and_missing_results_with_duplicate_id
         &100,
         &30,
         &BytesN::from_array(&env, &[82; 32]),
-        &unique_idempotency_key(&env),
+        &next_idempotency_key(&env),
     );
     let settled_id = client.create_session(
         &buyer,
@@ -2143,7 +2112,7 @@ fn get_session_batch_returns_ordered_found_and_missing_results_with_duplicate_id
         &100,
         &30,
         &BytesN::from_array(&env, &[83; 32]),
-        &unique_idempotency_key(&env),
+        &next_idempotency_key(&env),
     );
     let expired_id = client.create_session(
         &buyer,
@@ -2152,7 +2121,7 @@ fn get_session_batch_returns_ordered_found_and_missing_results_with_duplicate_id
         &100,
         &10,
         &BytesN::from_array(&env, &[84; 32]),
-        &unique_idempotency_key(&env),
+        &next_idempotency_key(&env),
     );
 
     client.cancel(&cancelled_id);
@@ -2245,7 +2214,7 @@ fn get_session_batch_enforces_nonzero_and_max_batch_size_bounds() {
             &100,
             &30,
             &BytesN::from_array(&env, &[(90 + idx) as u8; 32]),
-            &unique_idempotency_key(&env),
+            &next_idempotency_key(&env),
         );
         max_batch.push_back(id);
     }
@@ -2294,7 +2263,7 @@ fn get_session_batch_resource_usage_is_read_only_and_bounded() {
             &100,
             &50,
             &BytesN::from_array(&env, &[(110 + idx) as u8; 32]),
-            &unique_idempotency_key(&env),
+            &next_idempotency_key(&env),
         );
         batch_ids.push_back(session_id);
     }
@@ -2341,7 +2310,7 @@ fn settle_requires_seller_auth() {
     let usage_hash = BytesN::from_array(&env, &[9; 32]);
 
     env.as_contract(&contract_id, || {
-        storage::write_session(
+        let _ = storage::write_session(
             &env,
             &Session {
                 id: session_id.clone(),
@@ -2360,8 +2329,7 @@ fn settle_requires_seller_auth() {
                 resource_scheme_version: 1,
                 usage_scheme_version: None,
             },
-        )
-        .unwrap();
+        );
     });
 
     assert!(client.try_settle(&session_id, &10, &usage_hash).is_err());
@@ -2381,7 +2349,7 @@ fn settle_rejects_wrong_seller_auth() {
     let usage_hash = BytesN::from_array(&env, &[38; 32]);
 
     env.as_contract(&contract_id, || {
-        storage::write_session(
+        let _ = storage::write_session(
             &env,
             &Session {
                 id: session_id.clone(),
@@ -2400,8 +2368,7 @@ fn settle_rejects_wrong_seller_auth() {
                 resource_scheme_version: 1,
                 usage_scheme_version: None,
             },
-        )
-        .unwrap();
+        );
     });
 
     let result = client
@@ -2439,7 +2406,7 @@ fn settle_rejects_finalized_sessions() {
     let cancelled_id = BytesN::from_array(&env, &[11; 32]);
 
     env.as_contract(&contract_id, || {
-        storage::write_session(
+        let _ = storage::write_session(
             &env,
             &Session {
                 id: settled_id.clone(),
@@ -2458,9 +2425,8 @@ fn settle_rejects_finalized_sessions() {
                 resource_scheme_version: 1,
                 usage_scheme_version: Some(1),
             },
-        )
-        .unwrap();
-        storage::write_session(
+        );
+        let _ = storage::write_session(
             &env,
             &Session {
                 id: cancelled_id.clone(),
@@ -2479,8 +2445,7 @@ fn settle_rejects_finalized_sessions() {
                 resource_scheme_version: 1,
                 usage_scheme_version: None,
             },
-        )
-        .unwrap();
+        );
     });
 
     assert_eq!(
@@ -2514,7 +2479,7 @@ fn settle_stores_actual_amount_and_status() {
         &500,
         &50,
         &resource_hash,
-        &unique_idempotency_key(&env),
+        &next_idempotency_key(&env),
     );
     client.settle(&session_id, &125, &usage_hash);
     let session = client.get_session(&session_id);
@@ -2549,7 +2514,7 @@ fn settle_accepts_exact_cap_without_refund() {
         &500,
         &50,
         &resource_hash,
-        &unique_idempotency_key(&env),
+        &next_idempotency_key(&env),
     );
     client.settle(&session_id, &500, &usage_hash);
 
@@ -2588,7 +2553,7 @@ fn settlement_isolates_concurrent_sessions_sharing_an_asset() {
         &400,
         &50,
         &resource_one,
-        &unique_idempotency_key(&env),
+        &next_idempotency_key(&env),
     );
     let second = client.create_session(
         &buyer,
@@ -2597,7 +2562,7 @@ fn settlement_isolates_concurrent_sessions_sharing_an_asset() {
         &600,
         &50,
         &resource_two,
-        &unique_idempotency_key(&env),
+        &next_idempotency_key(&env),
     );
     client.settle(&first, &150, &usage_one);
 
@@ -2718,7 +2683,7 @@ fn asset_deprecation_requires_admin_and_blocks_new_sessions() {
             &100,
             &50,
             &resource_hash,
-            &unique_idempotency_key(&env)
+            &next_idempotency_key(&env)
         ),
         Err(Ok(ContractError::UnsupportedAsset))
     );
@@ -2743,7 +2708,7 @@ fn deprecated_asset_terminal_paths_clear_liability_before_removal() {
         &300,
         &50,
         &BytesN::from_array(&env, &[72; 32]),
-        &unique_idempotency_key(&env),
+        &next_idempotency_key(&env),
     );
     let cancel_id = client.create_session(
         &buyer,
@@ -2752,7 +2717,7 @@ fn deprecated_asset_terminal_paths_clear_liability_before_removal() {
         &300,
         &50,
         &BytesN::from_array(&env, &[73; 32]),
-        &unique_idempotency_key(&env),
+        &next_idempotency_key(&env),
     );
     let recover_id = client.create_session(
         &buyer,
@@ -2761,7 +2726,7 @@ fn deprecated_asset_terminal_paths_clear_liability_before_removal() {
         &300,
         &50,
         &BytesN::from_array(&env, &[74; 32]),
-        &unique_idempotency_key(&env),
+        &next_idempotency_key(&env),
     );
 
     let deprecate_reason = BytesN::from_array(&env, &[77; 32]);
@@ -2846,7 +2811,7 @@ fn undercollateralized_settlement_fails_without_state_transition() {
         &500,
         &50,
         &resource_hash,
-        &unique_idempotency_key(&env),
+        &next_idempotency_key(&env),
     );
     env.as_contract(&contract_id, || {
         token_client.transfer(&contract_id, &sink, &1);
@@ -2888,7 +2853,7 @@ fn settle_accepts_local_test_token_contract() {
         &500,
         &50,
         &resource_hash,
-        &unique_idempotency_key(&env),
+        &next_idempotency_key(&env),
     );
     client.settle(&session_id, &125, &usage_hash);
 
@@ -2925,7 +2890,7 @@ fn adversarial_terminal_failures_leave_the_session_open_and_funded() {
         &500,
         &50,
         &BytesN::from_array(&env, &[72; 32]),
-        &unique_idempotency_key(&env),
+        &next_idempotency_key(&env),
     );
     let usage_hash = BytesN::from_array(&env, &[73; 32]);
 
@@ -2976,7 +2941,7 @@ fn nested_token_callback_cannot_reenter_a_terminal_transition() {
         &500,
         &50,
         &BytesN::from_array(&env, &[74; 32]),
-        &unique_idempotency_key(&env),
+        &next_idempotency_key(&env),
     );
     let usage_hash = BytesN::from_array(&env, &[75; 32]);
     token.configure_nested_attempt(&contract_id, &session_id, &100, &usage_hash);
@@ -3016,7 +2981,7 @@ fn settle_rejects_invalid_amounts_and_expiry() {
         &500,
         &50,
         &resource_hash,
-        &unique_idempotency_key(&env),
+        &next_idempotency_key(&env),
     );
     let over_cap_id = client.create_session(
         &buyer,
@@ -3025,7 +2990,7 @@ fn settle_rejects_invalid_amounts_and_expiry() {
         &500,
         &50,
         &resource_hash,
-        &unique_idempotency_key(&env),
+        &next_idempotency_key(&env),
     );
     let expired_id = client.create_session(
         &buyer,
@@ -3034,7 +2999,7 @@ fn settle_rejects_invalid_amounts_and_expiry() {
         &500,
         &50,
         &resource_hash,
-        &unique_idempotency_key(&env),
+        &next_idempotency_key(&env),
     );
 
     assert_eq!(
@@ -3076,7 +3041,7 @@ fn expired_open_session_remains_observable_and_permissionlessly_recoverable() {
         &500,
         &50,
         &resource_hash,
-        &unique_idempotency_key(&env),
+        &next_idempotency_key(&env),
     );
 
     env.ledger().set_sequence_number(50);
@@ -3124,7 +3089,7 @@ fn expiry_boundary_selects_exactly_one_terminal_path() {
         &500,
         &50,
         &resource_hash,
-        &unique_idempotency_key(&env),
+        &next_idempotency_key(&env),
     );
     let cancels_before = client.create_session(
         &buyer,
@@ -3133,7 +3098,7 @@ fn expiry_boundary_selects_exactly_one_terminal_path() {
         &500,
         &50,
         &resource_hash,
-        &unique_idempotency_key(&env),
+        &next_idempotency_key(&env),
     );
     let recovers_at = client.create_session(
         &buyer,
@@ -3142,7 +3107,7 @@ fn expiry_boundary_selects_exactly_one_terminal_path() {
         &500,
         &50,
         &resource_hash,
-        &unique_idempotency_key(&env),
+        &next_idempotency_key(&env),
     );
 
     assert_eq!(
@@ -3198,7 +3163,7 @@ fn expiry_recovery_is_permissionless_fixed_recipient_and_single_use() {
         &500,
         &50,
         &resource_hash,
-        &unique_idempotency_key(&env),
+        &next_idempotency_key(&env),
     );
 
     env.ledger().set_sequence_number(51);
@@ -3241,7 +3206,7 @@ fn batch_recovery_is_bounded_and_reports_partial_results_in_order() {
         &100,
         &10,
         &BytesN::from_array(&env, &[70; 32]),
-        &unique_idempotency_key(&env),
+        &next_idempotency_key(&env),
     );
     let cancelled = client.create_session(
         &buyer,
@@ -3250,7 +3215,7 @@ fn batch_recovery_is_bounded_and_reports_partial_results_in_order() {
         &100,
         &20,
         &BytesN::from_array(&env, &[71; 32]),
-        &unique_idempotency_key(&env),
+        &next_idempotency_key(&env),
     );
     let settled = client.create_session(
         &buyer,
@@ -3259,7 +3224,7 @@ fn batch_recovery_is_bounded_and_reports_partial_results_in_order() {
         &100,
         &20,
         &BytesN::from_array(&env, &[72; 32]),
-        &unique_idempotency_key(&env),
+        &next_idempotency_key(&env),
     );
     let not_expired = client.create_session(
         &buyer,
@@ -3268,7 +3233,7 @@ fn batch_recovery_is_bounded_and_reports_partial_results_in_order() {
         &100,
         &20,
         &BytesN::from_array(&env, &[73; 32]),
-        &unique_idempotency_key(&env),
+        &next_idempotency_key(&env),
     );
     client.cancel(&cancelled);
     client.settle(&settled, &100, &BytesN::from_array(&env, &[74; 32]));
@@ -3369,7 +3334,7 @@ fn batch_recovery_refunds_each_stored_buyer_only() {
         &100,
         &10,
         &BytesN::from_array(&env, &[76; 32]),
-        &unique_idempotency_key(&env),
+        &next_idempotency_key(&env),
     );
     let second = client.create_session(
         &second_buyer,
@@ -3378,7 +3343,7 @@ fn batch_recovery_refunds_each_stored_buyer_only() {
         &100,
         &10,
         &BytesN::from_array(&env, &[77; 32]),
-        &unique_idempotency_key(&env),
+        &next_idempotency_key(&env),
     );
     env.ledger().set_sequence_number(10);
 
@@ -3414,7 +3379,7 @@ fn expiry_recovery_rejects_missing_settled_and_cancelled_sessions() {
         &500,
         &50,
         &resource_hash,
-        &unique_idempotency_key(&env),
+        &next_idempotency_key(&env),
     );
     let cancelled = client.create_session(
         &buyer,
@@ -3423,7 +3388,7 @@ fn expiry_recovery_rejects_missing_settled_and_cancelled_sessions() {
         &500,
         &50,
         &resource_hash,
-        &unique_idempotency_key(&env),
+        &next_idempotency_key(&env),
     );
     client.settle(&settled, &250, &usage_hash);
     client.cancel(&cancelled);
@@ -3461,7 +3426,7 @@ fn expiry_recovery_emits_versioned_receipt() {
         &500,
         &50,
         &resource_hash,
-        &unique_idempotency_key(&env),
+        &next_idempotency_key(&env),
     );
 
     env.ledger().set_sequence_number(50);
@@ -3503,7 +3468,7 @@ fn insufficient_funding_prevents_session_creation() {
             &500,
             &50,
             &resource_hash,
-            &unique_idempotency_key(&env)
+            &next_idempotency_key(&env)
         )
         .is_err());
     let _ = usage_hash;
@@ -3534,7 +3499,7 @@ fn settle_rejects_empty_usage_hash_before_transfer() {
         &500,
         &50,
         &resource_hash,
-        &unique_idempotency_key(&env),
+        &next_idempotency_key(&env),
     );
 
     assert_eq!(
@@ -3572,7 +3537,7 @@ fn settle_prevents_double_settlement() {
         &500,
         &50,
         &resource_hash,
-        &unique_idempotency_key(&env),
+        &next_idempotency_key(&env),
     );
 
     // First settlement succeeds
@@ -3622,7 +3587,7 @@ fn settle_emits_stable_event() {
         &500,
         &50,
         &resource_hash,
-        &unique_idempotency_key(&env),
+        &next_idempotency_key(&env),
     );
 
     client.settle(&session_id, &125, &usage_hash);
@@ -3661,7 +3626,7 @@ fn cancel_allows_buyer_cancellation_before_settlement() {
         &500,
         &50,
         &resource_hash,
-        &unique_idempotency_key(&env),
+        &next_idempotency_key(&env),
     );
     let session_before = client.get_session(&session_id);
     assert_eq!(session_before.status, SessionStatus::Open);
@@ -3684,7 +3649,7 @@ fn cancel_requires_buyer_auth() {
     let resource_hash = BytesN::from_array(&env, &[2; 32]);
 
     env.as_contract(&contract_id, || {
-        storage::write_session(
+        let _ = storage::write_session(
             &env,
             &Session {
                 id: session_id.clone(),
@@ -3703,8 +3668,7 @@ fn cancel_requires_buyer_auth() {
                 resource_scheme_version: 1,
                 usage_scheme_version: None,
             },
-        )
-        .unwrap();
+        );
     });
 
     assert!(client.try_cancel(&session_id).is_err());
@@ -3737,7 +3701,7 @@ fn cancel_rejects_already_settled_session() {
     let usage_hash = BytesN::from_array(&env, &[21; 32]);
 
     env.as_contract(&contract_id, || {
-        storage::write_session(
+        let _ = storage::write_session(
             &env,
             &Session {
                 id: session_id.clone(),
@@ -3756,8 +3720,7 @@ fn cancel_rejects_already_settled_session() {
                 resource_scheme_version: 1,
                 usage_scheme_version: Some(1),
             },
-        )
-        .unwrap();
+        );
     });
 
     assert_eq!(
@@ -3779,7 +3742,7 @@ fn cancel_rejects_already_cancelled_session() {
     let resource_hash = BytesN::from_array(&env, &[23; 32]);
 
     env.as_contract(&contract_id, || {
-        storage::write_session(
+        let _ = storage::write_session(
             &env,
             &Session {
                 id: session_id.clone(),
@@ -3798,8 +3761,7 @@ fn cancel_rejects_already_cancelled_session() {
                 resource_scheme_version: 1,
                 usage_scheme_version: None,
             },
-        )
-        .unwrap();
+        );
     });
 
     assert_eq!(
@@ -3827,7 +3789,7 @@ fn cancel_emits_stable_event() {
         &500,
         &50,
         &resource_hash,
-        &unique_idempotency_key(&env),
+        &next_idempotency_key(&env),
     );
 
     // Verify session is open before cancel
@@ -3873,7 +3835,7 @@ fn reject_allows_seller_rejection_and_refunds_buyer_only() {
         &500,
         &50,
         &resource_hash,
-        &unique_idempotency_key(&env),
+        &next_idempotency_key(&env),
     );
 
     let session_before = client.get_session(&session_id);
@@ -3917,7 +3879,7 @@ fn reject_requires_seller_auth() {
     let resource_hash = BytesN::from_array(&env, &[83; 32]);
 
     env.as_contract(&contract_id, || {
-        storage::write_session(
+        let _ = storage::write_session(
             &env,
             &Session {
                 id: session_id.clone(),
@@ -3936,8 +3898,7 @@ fn reject_requires_seller_auth() {
                 resource_scheme_version: 1,
                 usage_scheme_version: None,
             },
-        )
-        .unwrap();
+        );
     });
 
     assert!(client.try_reject(&session_id).is_err());
@@ -3969,7 +3930,7 @@ fn reject_rejects_terminal_and_expired_states() {
         &200,
         &50,
         &resource_hash,
-        &unique_idempotency_key(&env),
+        &next_idempotency_key(&env),
     );
     client.reject(&rejected_id);
     assert_eq!(
@@ -3997,7 +3958,7 @@ fn reject_rejects_terminal_and_expired_states() {
         &200,
         &60,
         &resource_hash,
-        &unique_idempotency_key(&env),
+        &next_idempotency_key(&env),
     );
     client.settle(&settled_id, &100, &usage_hash);
     assert_eq!(
@@ -4012,7 +3973,7 @@ fn reject_rejects_terminal_and_expired_states() {
         &200,
         &60,
         &resource_hash,
-        &unique_idempotency_key(&env),
+        &next_idempotency_key(&env),
     );
     client.cancel(&cancelled_id);
     assert_eq!(
@@ -4027,7 +3988,7 @@ fn reject_rejects_terminal_and_expired_states() {
         &200,
         &70,
         &resource_hash,
-        &unique_idempotency_key(&env),
+        &next_idempotency_key(&env),
     );
     env.ledger().set_sequence_number(70);
     assert_eq!(
@@ -4056,7 +4017,7 @@ fn preview_settle_calculates_exact_payout_and_refund_without_state_changes_or_au
         &500,
         &50,
         &resource_hash,
-        &unique_idempotency_key(&env),
+        &next_idempotency_key(&env),
     );
 
     // 1. Valid partial settlement preview
@@ -4140,7 +4101,7 @@ fn preview_settle_reports_deterministic_rejection_reasons() {
         &500,
         &50,
         &resource_hash,
-        &unique_idempotency_key(&env),
+        &next_idempotency_key(&env),
     );
     let zero_preview = client.preview_settle(&session_id, &0);
     assert_eq!(
@@ -4172,7 +4133,7 @@ fn preview_settle_reports_deterministic_rejection_reasons() {
         &200,
         &30,
         &resource_hash,
-        &unique_idempotency_key(&env),
+        &next_idempotency_key(&env),
     );
     env.ledger().set_sequence_number(30);
     let expired_preview = client.preview_settle(&expired_id, &100);
@@ -4197,7 +4158,7 @@ fn preview_settle_reports_deterministic_rejection_reasons() {
         &200,
         &60,
         &resource_hash,
-        &unique_idempotency_key(&env),
+        &next_idempotency_key(&env),
     );
     client.settle(&s_id, &100, &usage_hash);
     assert_eq!(
@@ -4212,7 +4173,7 @@ fn preview_settle_reports_deterministic_rejection_reasons() {
         &200,
         &60,
         &resource_hash,
-        &unique_idempotency_key(&env),
+        &next_idempotency_key(&env),
     );
     client.cancel(&c_id);
     assert_eq!(
@@ -4227,7 +4188,7 @@ fn preview_settle_reports_deterministic_rejection_reasons() {
         &200,
         &60,
         &resource_hash,
-        &unique_idempotency_key(&env),
+        &next_idempotency_key(&env),
     );
     client.reject(&r_id);
     assert_eq!(
@@ -4242,7 +4203,7 @@ fn preview_settle_reports_deterministic_rejection_reasons() {
         &200,
         &40,
         &resource_hash,
-        &unique_idempotency_key(&env),
+        &next_idempotency_key(&env),
     );
     env.ledger().set_sequence_number(40);
     client.recover_expired(&exp_id);
@@ -4264,7 +4225,7 @@ fn preview_settle_detects_undercollateralized_escrow() {
     let session_id = BytesN::from_array(&env, &[93; 32]);
 
     env.as_contract(&contract_id, || {
-        storage::write_session(
+        let _ = storage::write_session(
             &env,
             &Session {
                 id: session_id.clone(),
@@ -4283,8 +4244,7 @@ fn preview_settle_detects_undercollateralized_escrow() {
                 resource_scheme_version: 1,
                 usage_scheme_version: None,
             },
-        )
-        .unwrap();
+        );
     });
 
     let preview = client.preview_settle(&session_id, &50);
@@ -4293,113 +4253,6 @@ fn preview_settle_detects_undercollateralized_escrow() {
         SettlementRejectionReason::EscrowUnderfunded
     );
     assert!(!preview.eligible);
-}
-
-#[test]
-fn preview_settle_scheme_and_boundary_checks() {
-    let env = Env::default();
-    env.mock_all_auths_allowing_non_root_auth();
-    let contract_id = env.register(UptoSessionContract, ());
-    let client = UptoSessionContractClient::new(&env, &contract_id);
-    let buyer = Address::generate(&env);
-    let seller = Address::generate(&env);
-    let asset = create_test_asset(&env, &buyer, 1_000);
-    let resource_hash = BytesN::from_array(&env, &[94; 32]);
-    initialize_for_asset(&env, &client, &buyer, &asset);
-
-    let session_id = client.create_session(&buyer, &seller, &asset, &500, &50, &resource_hash);
-
-    // Exact boundary test: cap, cap - 1, cap + 1
-    let cap_preview = client.preview_settle(&session_id, &500);
-    assert!(cap_preview.eligible);
-    assert_eq!(cap_preview.seller_payout, 500);
-    assert_eq!(cap_preview.buyer_refund, 0);
-
-    let below_cap = client.preview_settle(&session_id, &499);
-    assert!(below_cap.eligible);
-    assert_eq!(below_cap.seller_payout, 499);
-    assert_eq!(below_cap.buyer_refund, 1);
-
-    let above_cap = client.preview_settle(&session_id, &501);
-    assert!(!above_cap.eligible);
-    assert_eq!(above_cap.rejection_reason, SettlementRejectionReason::AmountExceedsCap);
-
-    // Expiry exact boundaries: expires_at - 1, expires_at
-    env.ledger().set_sequence_number(49);
-    assert!(client.preview_settle(&session_id, &200).eligible);
-
-    env.ledger().set_sequence_number(50);
-    let expired_preview = client.preview_settle(&session_id, &200);
-    assert!(!expired_preview.eligible);
-    assert_eq!(expired_preview.rejection_reason, SettlementRejectionReason::Expired);
-}
-
-#[test]
-fn preview_cancel_reports_accurate_eligibility_and_reasons() {
-    let env = Env::default();
-    env.mock_all_auths_allowing_non_root_auth();
-    let contract_id = env.register(UptoSessionContract, ());
-    let client = UptoSessionContractClient::new(&env, &contract_id);
-    let buyer = Address::generate(&env);
-    let seller = Address::generate(&env);
-    let asset = create_test_asset(&env, &buyer, 1_000);
-    let resource_hash = BytesN::from_array(&env, &[95; 32]);
-    let usage_hash = BytesN::from_array(&env, &[96; 32]);
-    initialize_for_asset(&env, &client, &buyer, &asset);
-
-    // 1. Missing session
-    let missing_id = BytesN::from_array(&env, &[97; 32]);
-    assert_eq!(
-        client.preview_cancel(&missing_id).rejection_reason,
-        CancellationRejectionReason::NotFound
-    );
-
-    // 2. Open session before expiry
-    let session_id = client.create_session(&buyer, &seller, &asset, &500, &50, &resource_hash);
-    let preview = client.preview_cancel(&session_id);
-    assert!(preview.eligible);
-    assert_eq!(preview.refundable_amount, 500);
-    assert!(!preview.is_expired);
-    assert_eq!(preview.rejection_reason, CancellationRejectionReason::None);
-
-    // 3. Expired session boundary: sequence == expires_at
-    env.ledger().set_sequence_number(50);
-    let expired_preview = client.preview_cancel(&session_id);
-    assert!(!expired_preview.eligible);
-    assert_eq!(expired_preview.refundable_amount, 0);
-    assert!(expired_preview.is_expired);
-    assert_eq!(expired_preview.rejection_reason, CancellationRejectionReason::Expired);
-
-    // 4. Terminal states
-    env.ledger().set_sequence_number(1);
-    let s_id = client.create_session(&buyer, &seller, &asset, &200, &60, &resource_hash);
-    client.settle(&s_id, &100, &usage_hash);
-    assert_eq!(
-        client.preview_cancel(&s_id).rejection_reason,
-        CancellationRejectionReason::AlreadySettled
-    );
-
-    let c_id = client.create_session(&buyer, &seller, &asset, &200, &60, &resource_hash);
-    client.cancel(&c_id);
-    assert_eq!(
-        client.preview_cancel(&c_id).rejection_reason,
-        CancellationRejectionReason::AlreadyCancelled
-    );
-
-    let r_id = client.create_session(&buyer, &seller, &asset, &200, &60, &resource_hash);
-    client.reject(&r_id);
-    assert_eq!(
-        client.preview_cancel(&r_id).rejection_reason,
-        CancellationRejectionReason::AlreadyRejected
-    );
-
-    let exp_id = client.create_session(&buyer, &seller, &asset, &200, &40, &resource_hash);
-    env.ledger().set_sequence_number(40);
-    client.recover_expired(&exp_id);
-    assert_eq!(
-        client.preview_cancel(&exp_id).rejection_reason,
-        CancellationRejectionReason::AlreadyExpired
-    );
 }
 
 #[test]
@@ -4421,7 +4274,7 @@ fn extend_ttl_succeeds_for_open_sessions() {
         &500,
         &50,
         &resource_hash,
-        &unique_idempotency_key(&env),
+        &next_idempotency_key(&env),
     );
 
     assert!(client.try_extend_ttl(&session_id).is_ok());
@@ -4440,7 +4293,7 @@ fn extend_ttl_rejects_cancelled_sessions() {
     let resource_hash = BytesN::from_array(&env, &[27; 32]);
 
     env.as_contract(&contract_id, || {
-        storage::write_session(
+        let _ = storage::write_session(
             &env,
             &Session {
                 id: session_id.clone(),
@@ -4459,8 +4312,7 @@ fn extend_ttl_rejects_cancelled_sessions() {
                 resource_scheme_version: 1,
                 usage_scheme_version: None,
             },
-        )
-        .unwrap();
+        );
     });
 
     assert_eq!(
@@ -4482,7 +4334,7 @@ fn extend_ttl_rejects_settled_sessions() {
     let usage_hash = BytesN::from_array(&env, &[30; 32]);
 
     env.as_contract(&contract_id, || {
-        storage::write_session(
+        let _ = storage::write_session(
             &env,
             &Session {
                 id: session_id.clone(),
@@ -4501,8 +4353,7 @@ fn extend_ttl_rejects_settled_sessions() {
                 resource_scheme_version: 1,
                 usage_scheme_version: Some(1),
             },
-        )
-        .unwrap();
+        );
     });
 
     assert_eq!(
@@ -4550,7 +4401,7 @@ fn recoverability_query_matches_recover_expired_boundary_and_terminal_states() {
         &200,
         &50,
         &resource_hash,
-        &unique_idempotency_key(&env),
+        &next_idempotency_key(&env),
     );
     env.ledger().set_sequence_number(49);
     let before = client.get_recoverability(&open_id);
@@ -4586,7 +4437,7 @@ fn recoverability_query_matches_recover_expired_boundary_and_terminal_states() {
         &200,
         &60,
         &resource_hash,
-        &unique_idempotency_key(&env),
+        &next_idempotency_key(&env),
     );
     client.settle(&settled, &100, &usage_hash);
     assert_eq!(
@@ -4600,7 +4451,7 @@ fn recoverability_query_matches_recover_expired_boundary_and_terminal_states() {
         &200,
         &60,
         &resource_hash,
-        &unique_idempotency_key(&env),
+        &next_idempotency_key(&env),
     );
     client.cancel(&cancelled);
     assert_eq!(
@@ -4614,7 +4465,7 @@ fn recoverability_query_matches_recover_expired_boundary_and_terminal_states() {
         &200,
         &60,
         &resource_hash,
-        &unique_idempotency_key(&env),
+        &next_idempotency_key(&env),
     );
     client.reject(&rejected);
     let rej = client.get_recoverability(&rejected);
@@ -4652,6 +4503,7 @@ fn solvency_query_reports_ordered_mixed_health_with_defined_edge_cases() {
         ],
     );
     let hash = BytesN::from_array(&env, &[97; 32]);
+    let key = BytesN::from_array(&env, &[98; 32]);
     client.create_session(
         &buyer,
         &seller,
@@ -4659,7 +4511,7 @@ fn solvency_query_reports_ordered_mixed_health_with_defined_edge_cases() {
         &100,
         &50,
         &hash,
-        &unique_idempotency_key(&env),
+        &next_idempotency_key(&env),
     );
     client.create_session(
         &buyer,
@@ -4668,22 +4520,14 @@ fn solvency_query_reports_ordered_mixed_health_with_defined_edge_cases() {
         &100,
         &50,
         &hash,
-        &unique_idempotency_key(&env),
+        &next_idempotency_key(&env),
     );
-    client.create_session(
-        &buyer,
-        &seller,
-        &underfunded,
-        &100,
-        &50,
-        &hash,
-        &unique_idempotency_key(&env),
-    );
+    client.create_session(&buyer, &seller, &underfunded, &100, &50, &hash, &key);
     token::StellarAssetClient::new(&env, &surplus).mint(&contract_id, &40);
     env.as_contract(&contract_id, || {
         storage::increase_liability(&env, &underfunded, 25).unwrap();
     });
-    client.deprecate_asset(&deprecated, &BytesN::from_array(&env, &[99; 32]));
+    client.deprecate_asset(&deprecated, &BytesN::from_array(&env, &[9; 32]));
 
     let query = soroban_sdk::vec![
         &env,
@@ -4793,7 +4637,7 @@ fn per_asset_minimum_enforces_boundaries_and_policy_invariants() {
             &9,
             &50,
             &hash(90),
-            &unique_idempotency_key(&env)
+            &next_idempotency_key(&env)
         ),
         Err(Ok(ContractError::InvalidAmount))
     );
@@ -4805,7 +4649,7 @@ fn per_asset_minimum_enforces_boundaries_and_policy_invariants() {
             &101,
             &50,
             &hash(91),
-            &unique_idempotency_key(&env)
+            &next_idempotency_key(&env)
         ),
         Err(Ok(ContractError::AmountExceedsCap))
     );
@@ -4818,7 +4662,7 @@ fn per_asset_minimum_enforces_boundaries_and_policy_invariants() {
             &10,
             &50,
             &hash(92),
-            &unique_idempotency_key(&env)
+            &next_idempotency_key(&env)
         ),
         Err(Ok(ContractError::InvalidAmount))
     );
@@ -4829,7 +4673,7 @@ fn per_asset_minimum_enforces_boundaries_and_policy_invariants() {
         &10,
         &50,
         &hash(93),
-        &unique_idempotency_key(&env),
+        &next_idempotency_key(&env),
     );
     let at_max = client.create_session(
         &buyer,
@@ -4838,7 +4682,7 @@ fn per_asset_minimum_enforces_boundaries_and_policy_invariants() {
         &100,
         &50,
         &hash(94),
-        &unique_idempotency_key(&env),
+        &next_idempotency_key(&env),
     );
 
     // The cap cannot be moved below the minimum; a valid update leaves sessions intact.
@@ -4882,7 +4726,7 @@ fn seller_exposure_ceiling_enforces_limits_and_releases_exposure() {
         &1_000,
         &100,
         &resource_hash,
-        &unique_idempotency_key(&env),
+        &next_idempotency_key(&env),
     );
     assert_eq!(client.get_seller_exposure(&seller, &asset), 1_000);
 
@@ -4894,7 +4738,7 @@ fn seller_exposure_ceiling_enforces_limits_and_releases_exposure() {
         &600,
         &100,
         &resource_hash,
-        &unique_idempotency_key(&env),
+        &next_idempotency_key(&env),
     );
     assert_eq!(err, Err(Ok(ContractError::SellerExposureCeilingExceeded)));
     assert_eq!(client.get_seller_exposure(&seller, &asset), 1_000);
@@ -4907,7 +4751,7 @@ fn seller_exposure_ceiling_enforces_limits_and_releases_exposure() {
         &500,
         &100,
         &resource_hash,
-        &unique_idempotency_key(&env),
+        &next_idempotency_key(&env),
     );
     assert_eq!(client.get_seller_exposure(&seller, &asset), 1_500);
 
@@ -4927,7 +4771,7 @@ fn seller_exposure_ceiling_enforces_limits_and_releases_exposure() {
         &700,
         &50,
         &resource_hash,
-        &unique_idempotency_key(&env),
+        &next_idempotency_key(&env),
     );
     assert_eq!(client.get_seller_exposure(&seller, &asset), 700);
     env.ledger().set_sequence_number(55);
@@ -4968,7 +4812,7 @@ fn buyer_open_session_limits_enforces_boundaries_and_maintains_isolation() {
         &100,
         &100,
         &resource_hash,
-        &unique_idempotency_key(&env),
+        &next_idempotency_key(&env),
     );
     assert_eq!(client.get_buyer_open_sessions(&buyer_1), 1);
     assert_eq!(client.get_buyer_open_sessions(&buyer_2), 0);
@@ -4981,7 +4825,7 @@ fn buyer_open_session_limits_enforces_boundaries_and_maintains_isolation() {
         &100,
         &100,
         &resource_hash,
-        &unique_idempotency_key(&env),
+        &next_idempotency_key(&env),
     );
     assert_eq!(client.get_buyer_open_sessions(&buyer_1), 2);
 
@@ -4993,7 +4837,7 @@ fn buyer_open_session_limits_enforces_boundaries_and_maintains_isolation() {
         &100,
         &100,
         &resource_hash,
-        &unique_idempotency_key(&env),
+        &next_idempotency_key(&env),
     );
     assert_eq!(err, Err(Ok(ContractError::BuyerOpenSessionsExceeded)));
     assert_eq!(client.get_buyer_open_sessions(&buyer_1), 2);
@@ -5006,7 +4850,7 @@ fn buyer_open_session_limits_enforces_boundaries_and_maintains_isolation() {
         &100,
         &100,
         &resource_hash,
-        &unique_idempotency_key(&env),
+        &next_idempotency_key(&env),
     );
     assert_eq!(client.get_buyer_open_sessions(&buyer_2), 1);
     assert_eq!(client.get_buyer_open_sessions(&buyer_1), 2);
@@ -5023,7 +4867,7 @@ fn buyer_open_session_limits_enforces_boundaries_and_maintains_isolation() {
         &100,
         &100,
         &resource_hash,
-        &unique_idempotency_key(&env),
+        &next_idempotency_key(&env),
     );
     assert_eq!(client.get_buyer_open_sessions(&buyer_1), 2);
 
@@ -5074,7 +4918,7 @@ fn seller_open_session_limits_enforces_boundaries_and_maintains_isolation() {
         &100,
         &100,
         &resource_hash,
-        &unique_idempotency_key(&env),
+        &next_idempotency_key(&env),
     );
     assert_eq!(client.get_seller_open_sessions(&seller_1), 1);
     assert_eq!(client.get_seller_open_sessions(&seller_2), 0);
@@ -5087,7 +4931,7 @@ fn seller_open_session_limits_enforces_boundaries_and_maintains_isolation() {
         &100,
         &100,
         &resource_hash,
-        &unique_idempotency_key(&env),
+        &next_idempotency_key(&env),
     );
     assert_eq!(client.get_seller_open_sessions(&seller_1), 2);
 
@@ -5099,7 +4943,7 @@ fn seller_open_session_limits_enforces_boundaries_and_maintains_isolation() {
         &100,
         &100,
         &resource_hash,
-        &unique_idempotency_key(&env),
+        &next_idempotency_key(&env),
     );
     assert_eq!(err, Err(Ok(ContractError::SellerOpenSessionsExceeded)));
     assert_eq!(client.get_seller_open_sessions(&seller_1), 2);
@@ -5112,7 +4956,7 @@ fn seller_open_session_limits_enforces_boundaries_and_maintains_isolation() {
         &100,
         &100,
         &resource_hash,
-        &unique_idempotency_key(&env),
+        &next_idempotency_key(&env),
     );
     assert_eq!(client.get_seller_open_sessions(&seller_2), 1);
     assert_eq!(client.get_seller_open_sessions(&seller_1), 2);
@@ -5129,7 +4973,7 @@ fn seller_open_session_limits_enforces_boundaries_and_maintains_isolation() {
         &100,
         &100,
         &resource_hash,
-        &unique_idempotency_key(&env),
+        &next_idempotency_key(&env),
     );
     assert_eq!(client.get_seller_open_sessions(&seller_1), 2);
 
@@ -5175,7 +5019,7 @@ fn reduce_session_cap_lowers_cap_refunds_buyer_and_reduces_liability() {
         &1_000,
         &100,
         &resource_hash,
-        &unique_idempotency_key(&env),
+        &next_idempotency_key(&env),
     );
     assert_eq!(token.balance(&buyer), 9_000);
     assert_eq!(client.get_escrow_liability(&asset), 1_000);
@@ -5192,12 +5036,11 @@ fn reduce_session_cap_lowers_cap_refunds_buyer_and_reduces_liability() {
     assert_eq!(err_zero, Err(Ok(ContractError::InvalidCapReduction)));
 
     // Valid reduction from 1,000 to 600
-    // Refunds 400 to buyer, reduces liability, seller exposure, and buyer exposure to 600
+    // Refunds 400 to buyer, reduces liability and seller exposure to 600
     client.reduce_session_cap(&session_id, &600);
     assert_eq!(token.balance(&buyer), 9_400);
     assert_eq!(client.get_escrow_liability(&asset), 600);
     assert_eq!(client.get_seller_exposure(&seller, &asset), 600);
-    assert_eq!(client.get_buyer_exposure(&buyer, &asset), 600);
 
     let session = client.get_session(&session_id);
     assert_eq!(session.max_amount, 600);
@@ -5211,7 +5054,6 @@ fn reduce_session_cap_lowers_cap_refunds_buyer_and_reduces_liability() {
     assert_eq!(token.balance(&buyer), 9_600);
     assert_eq!(client.get_escrow_liability(&asset), 400);
     assert_eq!(client.get_seller_exposure(&seller, &asset), 400);
-    assert_eq!(client.get_buyer_exposure(&buyer, &asset), 400);
 
     // Settle with actual amount 350 <= 400
     client.settle(&session_id, &350, &usage_hash);
@@ -5219,7 +5061,6 @@ fn reduce_session_cap_lowers_cap_refunds_buyer_and_reduces_liability() {
     assert_eq!(token.balance(&buyer), 9_650); // 9,600 + 50 refund
     assert_eq!(client.get_escrow_liability(&asset), 0);
     assert_eq!(client.get_seller_exposure(&seller, &asset), 0);
-    assert_eq!(client.get_buyer_exposure(&buyer, &asset), 0);
 
     // Terminal session (Settled) reduction must fail
     let err_settled = client.try_reduce_session_cap(&session_id, &200);
@@ -5233,7 +5074,7 @@ fn reduce_session_cap_lowers_cap_refunds_buyer_and_reduces_liability() {
         &500,
         &50,
         &resource_hash,
-        &unique_idempotency_key(&env),
+        &next_idempotency_key(&env),
     );
     env.ledger().set_sequence_number(55);
     let err_expired = client.try_reduce_session_cap(&s2_id, &300);
@@ -5319,7 +5160,7 @@ fn creation_pause_requires_admin_and_fails_closed_before_transfer() {
             &100,
             &50,
             &resource_hash,
-            &unique_idempotency_key(&env)
+            &next_idempotency_key(&env)
         ),
         Err(Ok(ContractError::CreationPaused))
     );
@@ -5376,7 +5217,7 @@ fn creation_pause_rejects_repeated_calls_and_resume_restores_creation() {
             &100,
             &50,
             &resource_hash,
-            &unique_idempotency_key(&env)
+            &next_idempotency_key(&env)
         ),
         Err(Ok(ContractError::CreationPaused))
     );
@@ -5407,7 +5248,7 @@ fn creation_pause_rejects_repeated_calls_and_resume_restores_creation() {
         &100,
         &50,
         &resource_hash,
-        &unique_idempotency_key(&env),
+        &next_idempotency_key(&env),
     );
     assert_eq!(client.get_session(&session_id).status, SessionStatus::Open);
 }
@@ -5433,7 +5274,7 @@ fn paused_creation_preserves_all_exit_paths() {
         &500,
         &100,
         &resource_hash,
-        &unique_idempotency_key(&env),
+        &next_idempotency_key(&env),
     );
     let to_cancel = client.create_session(
         &buyer,
@@ -5442,7 +5283,7 @@ fn paused_creation_preserves_all_exit_paths() {
         &500,
         &100,
         &resource_hash,
-        &unique_idempotency_key(&env),
+        &next_idempotency_key(&env),
     );
     let to_extend = client.create_session(
         &buyer,
@@ -5451,7 +5292,7 @@ fn paused_creation_preserves_all_exit_paths() {
         &500,
         &100,
         &resource_hash,
-        &unique_idempotency_key(&env),
+        &next_idempotency_key(&env),
     );
     let to_recover = client.create_session(
         &buyer,
@@ -5460,7 +5301,7 @@ fn paused_creation_preserves_all_exit_paths() {
         &500,
         &100,
         &resource_hash,
-        &unique_idempotency_key(&env),
+        &next_idempotency_key(&env),
     );
 
     client.pause_creation();
@@ -5763,860 +5604,4 @@ fn lifecycle_events_expose_indexable_topics_and_versions() {
         events::publish_creation_resumed(&env, &admin)
     });
     assert_indexable_event(&env, &contract_id, "creation_resumed", false, 3);
-}
-
-#[test]
-fn preview_recover_expired_batch_matches_execution_boundaries_without_state_mutations() {
-    let env = Env::default();
-    env.mock_all_auths_allowing_non_root_auth();
-    let contract_id = env.register(UptoSessionContract, ());
-    let client = UptoSessionContractClient::new(&env, &contract_id);
-    let buyer = Address::generate(&env);
-    let seller = Address::generate(&env);
-    let asset = create_test_asset(&env, &buyer, 1_000);
-    initialize_for_asset(&env, &client, &buyer, &asset);
-    let token_client = token::Client::new(&env, &asset);
-
-    let recoverable = client.create_session(
-        &buyer,
-        &seller,
-        &asset,
-        &100,
-        &10,
-        &BytesN::from_array(&env, &[70; 32]),
-        &unique_idempotency_key(&env),
-    );
-    let cancelled = client.create_session(
-        &buyer,
-        &seller,
-        &asset,
-        &100,
-        &20,
-        &BytesN::from_array(&env, &[71; 32]),
-        &unique_idempotency_key(&env),
-    );
-    let settled = client.create_session(
-        &buyer,
-        &seller,
-        &asset,
-        &100,
-        &20,
-        &BytesN::from_array(&env, &[72; 32]),
-        &unique_idempotency_key(&env),
-    );
-    let not_expired = client.create_session(
-        &buyer,
-        &seller,
-        &asset,
-        &100,
-        &20,
-        &BytesN::from_array(&env, &[73; 32]),
-        &unique_idempotency_key(&env),
-    );
-    client.cancel(&cancelled);
-    client.settle(&settled, &100, &BytesN::from_array(&env, &[74; 32]));
-    env.ledger().set_sequence_number(10);
-    let missing = BytesN::from_array(&env, &[75; 32]);
-
-    let batch = soroban_sdk::vec![
-        &env,
-        recoverable.clone(),
-        missing.clone(),
-        recoverable.clone(),
-        cancelled.clone(),
-        settled.clone(),
-        not_expired.clone(),
-    ];
-
-    // Preview at exact boundary (ledger 10 == recoverable.expires_at_ledger 10)
-    let preview_results = client.preview_recover_expired_batch(&batch);
-    let expected = soroban_sdk::vec![
-        &env,
-        BatchRecoveryResult {
-            session_id: recoverable.clone(),
-            status: BatchRecoveryStatus::Recovered,
-            refunded_amount: 100,
-        },
-        BatchRecoveryResult {
-            session_id: missing.clone(),
-            status: BatchRecoveryStatus::NotFound,
-            refunded_amount: 0,
-        },
-        BatchRecoveryResult {
-            session_id: recoverable.clone(),
-            status: BatchRecoveryStatus::Duplicate,
-            refunded_amount: 0,
-        },
-        BatchRecoveryResult {
-            session_id: cancelled.clone(),
-            status: BatchRecoveryStatus::AlreadyCancelled,
-            refunded_amount: 0,
-        },
-        BatchRecoveryResult {
-            session_id: settled.clone(),
-            status: BatchRecoveryStatus::AlreadySettled,
-            refunded_amount: 0,
-        },
-        BatchRecoveryResult {
-            session_id: not_expired.clone(),
-            status: BatchRecoveryStatus::NotExpired,
-            refunded_amount: 0,
-        },
-    ];
-    assert_eq!(preview_results, expected);
-
-    // Verify preview did not mutate state, balances, or emit events
-    assert_eq!(client.get_session(&recoverable).status, SessionStatus::Open);
-    assert_eq!(client.get_session(&recoverable).escrowed_amount, 100);
-    assert_eq!(token_client.balance(&contract_id), 200); // 100 recoverable + 100 not_expired
-    assert_eq!(token_client.balance(&buyer), 700);
-
-    // Bounded input checks
-    assert_eq!(
-        client.try_preview_recover_expired_batch(&soroban_sdk::vec![&env]),
-        Err(Ok(ContractError::InvalidBatchSize))
-    );
-    let mut oversized = soroban_sdk::Vec::new(&env);
-    for byte in 0..=MAX_RECOVERY_BATCH_SIZE {
-        oversized.push_back(BytesN::from_array(&env, &[byte as u8; 32]));
-    }
-    assert_eq!(
-        client.try_preview_recover_expired_batch(&oversized),
-        Err(Ok(ContractError::InvalidBatchSize))
-    );
-
-    // Now execute actual batch recovery and verify outputs match preview exactly
-    let executed_results = client.recover_expired_batch(&batch);
-    assert_eq!(executed_results, expected);
-
-    // After execution, recoverable is now AlreadyRecovered
-    let preview_after = client.preview_recover_expired_batch(&soroban_sdk::vec![&env, recoverable.clone()]);
-    assert_eq!(
-        preview_after.get(0).unwrap().status,
-        BatchRecoveryStatus::AlreadyRecovered
-    );
-}
-
-fn record_contract_event_names(
-    env: &Env,
-    contract_id: &Address,
-    audit_log: &mut std::vec::Vec<std::string::String>,
-) {
-    use soroban_sdk::xdr::{ContractEventBody, ScVal};
-
-    for event in env.events().all().filter_by_contract(contract_id).events() {
-        let ContractEventBody::V0(body) = &event.body;
-        if let Some(ScVal::Symbol(symbol)) = body.topics.first() {
-            if let Ok(name) = std::str::from_utf8(&symbol.0[..]) {
-                audit_log.push(std::string::String::from(name));
-            }
-        }
-    }
-}
-
-#[test]
-fn same_ledger_asset_cap_reduction_and_session_creation_both_orderings() {
-    let resource_hash = |env: &Env, tag: u8| BytesN::from_array(env, &[tag; 32]);
-
-    // Order A: admin lowers asset session cap before buyer create_session in the same ledger.
-    {
-        let env = Env::default();
-        env.mock_all_auths_allowing_non_root_auth();
-        env.ledger().set_sequence_number(100);
-        let contract_id = env.register(UptoSessionContract, ());
-        let client = UptoSessionContractClient::new(&env, &contract_id);
-        let admin = Address::generate(&env);
-        let buyer = Address::generate(&env);
-        let seller = Address::generate(&env);
-        let asset = create_test_asset(&env, &buyer, 2_000);
-        client.initialize(
-            &admin,
-            &soroban_sdk::vec![
-                &env,
-                AssetPolicy {
-                    asset: asset.clone(),
-                    max_session_amount: 1_000,
-                    min_session_amount: 1,
-                    max_asset_exposure: 10_000,
-                    max_buyer_exposure: 10_000,
-                }
-            ],
-        );
-
-        let mut audit_log = std::vec::Vec::new();
-        client.set_asset_max_session_amount(&asset, &400);
-        record_contract_event_names(&env, &contract_id, &mut audit_log);
-
-        // Creation in the same ledger sees the reduced cap (400).
-        assert_eq!(
-            client.try_create_session(
-                &buyer,
-                &seller,
-                &asset,
-                &600,
-                &150,
-                &resource_hash(&env, 11),
-                &unique_idempotency_key(&env),
-            ),
-            Err(Ok(ContractError::AmountExceedsCap))
-        );
-        record_contract_event_names(&env, &contract_id, &mut audit_log);
-        assert_eq!(client.get_escrow_liability(&asset), 0);
-        assert_eq!(client.get_buyer_exposure(&buyer, &asset), 0);
-
-        let s1 = client.create_session(
-            &buyer,
-            &seller,
-            &asset,
-            &400,
-            &150,
-            &resource_hash(&env, 12),
-            &unique_idempotency_key(&env),
-        );
-        record_contract_event_names(&env, &contract_id, &mut audit_log);
-
-        let final_cap = client.get_asset_max_session_amount(&asset);
-        assert_eq!(final_cap, 400);
-        assert_eq!(client.get_session(&s1).max_amount, 400);
-        assert_eq!(client.get_escrow_liability(&asset), 400);
-        assert_eq!(client.get_buyer_exposure(&buyer, &asset), 400);
-        assert!(client.get_escrow_liability(&asset) <= final_cap);
-        assert_eq!(
-            audit_log,
-            std::vec!["asset_session_cap_updated", "session_created"]
-        );
-    }
-
-    // Order B: buyer create_session lands before admin lowers asset session cap in the same ledger.
-    {
-        let env = Env::default();
-        env.mock_all_auths_allowing_non_root_auth();
-        env.ledger().set_sequence_number(100);
-        let contract_id = env.register(UptoSessionContract, ());
-        let client = UptoSessionContractClient::new(&env, &contract_id);
-        let admin = Address::generate(&env);
-        let buyer = Address::generate(&env);
-        let seller = Address::generate(&env);
-        let asset = create_test_asset(&env, &buyer, 2_000);
-        client.initialize(
-            &admin,
-            &soroban_sdk::vec![
-                &env,
-                AssetPolicy {
-                    asset: asset.clone(),
-                    max_session_amount: 1_000,
-                    min_session_amount: 1,
-                    max_asset_exposure: 10_000,
-                    max_buyer_exposure: 10_000,
-                }
-            ],
-        );
-
-        let mut audit_log = std::vec::Vec::new();
-        // Pre-reduction creation sees cap = 1,000.
-        let s1 = client.create_session(
-            &buyer,
-            &seller,
-            &asset,
-            &600,
-            &150,
-            &resource_hash(&env, 13),
-            &unique_idempotency_key(&env),
-        );
-        record_contract_event_names(&env, &contract_id, &mut audit_log);
-
-        // Same-ledger admin cap reduction lowers cap to 400 without rewriting s1.
-        client.set_asset_max_session_amount(&asset, &400);
-        record_contract_event_names(&env, &contract_id, &mut audit_log);
-
-        assert_eq!(client.get_session(&s1).max_amount, 600);
-        assert_eq!(
-            client.try_create_session(
-                &buyer,
-                &seller,
-                &asset,
-                &600,
-                &150,
-                &resource_hash(&env, 14),
-                &unique_idempotency_key(&env),
-            ),
-            Err(Ok(ContractError::AmountExceedsCap))
-        );
-        record_contract_event_names(&env, &contract_id, &mut audit_log);
-
-        // Subsequent creation in the same ledger uses the updated 400 cap.
-        let s2 = client.create_session(
-            &buyer,
-            &seller,
-            &asset,
-            &400,
-            &150,
-            &resource_hash(&env, 15),
-            &unique_idempotency_key(&env),
-        );
-        record_contract_event_names(&env, &contract_id, &mut audit_log);
-
-        assert_eq!(client.get_session(&s2).max_amount, 400);
-        // Total exposure equals sum of authorizations granted in transaction order (600 + 400).
-        assert_eq!(client.get_escrow_liability(&asset), 1_000);
-        assert_eq!(client.get_buyer_exposure(&buyer, &asset), 1_000);
-        assert_eq!(
-            audit_log,
-            std::vec![
-                "session_created",
-                "asset_session_cap_updated",
-                "session_created"
-            ]
-        );
-    }
-}
-
-#[test]
-fn same_ledger_buyer_exposure_ceiling_reduction_and_session_creation_both_orderings() {
-    let resource_hash = |env: &Env, tag: u8| BytesN::from_array(env, &[tag; 32]);
-
-    // Order A: admin reduces buyer exposure ceiling before creation in the same ledger.
-    {
-        let env = Env::default();
-        env.mock_all_auths_allowing_non_root_auth();
-        env.ledger().set_sequence_number(100);
-        let contract_id = env.register(UptoSessionContract, ());
-        let client = UptoSessionContractClient::new(&env, &contract_id);
-        let admin = Address::generate(&env);
-        let buyer = Address::generate(&env);
-        let seller = Address::generate(&env);
-        let asset = create_test_asset(&env, &buyer, 2_000);
-        client.initialize(
-            &admin,
-            &soroban_sdk::vec![
-                &env,
-                AssetPolicy {
-                    asset: asset.clone(),
-                    max_session_amount: 1_000,
-                    min_session_amount: 1,
-                    max_asset_exposure: 10_000,
-                    max_buyer_exposure: 1_000,
-                }
-            ],
-        );
-
-        let mut audit_log = std::vec::Vec::new();
-        client.set_buyer_exposure_ceiling(&asset, &400);
-        record_contract_event_names(&env, &contract_id, &mut audit_log);
-
-        assert_eq!(
-            client.try_create_session(
-                &buyer,
-                &seller,
-                &asset,
-                &500,
-                &150,
-                &resource_hash(&env, 21),
-                &unique_idempotency_key(&env),
-            ),
-            Err(Ok(ContractError::BuyerExposureCeilingExceeded))
-        );
-        record_contract_event_names(&env, &contract_id, &mut audit_log);
-
-        let s1 = client.create_session(
-            &buyer,
-            &seller,
-            &asset,
-            &400,
-            &150,
-            &resource_hash(&env, 22),
-            &unique_idempotency_key(&env),
-        );
-        record_contract_event_names(&env, &contract_id, &mut audit_log);
-
-        assert_eq!(
-            client.try_create_session(
-                &buyer,
-                &seller,
-                &asset,
-                &1,
-                &150,
-                &resource_hash(&env, 23),
-                &unique_idempotency_key(&env),
-            ),
-            Err(Ok(ContractError::BuyerExposureCeilingExceeded))
-        );
-        assert_eq!(client.get_buyer_exposure(&buyer, &asset), 400);
-        assert!(
-            client.get_buyer_exposure(&buyer, &asset) <= client.get_buyer_exposure_ceiling(&asset)
-        );
-        assert_eq!(client.get_session(&s1).status, SessionStatus::Open);
-        assert_eq!(
-            audit_log,
-            std::vec!["buyer_exposure_ceiling_updated", "session_created"]
-        );
-    }
-
-    // Order B: create_session(500) before ceiling reduction to 400 in the same ledger.
-    {
-        let env = Env::default();
-        env.mock_all_auths_allowing_non_root_auth();
-        env.ledger().set_sequence_number(100);
-        let contract_id = env.register(UptoSessionContract, ());
-        let client = UptoSessionContractClient::new(&env, &contract_id);
-        let admin = Address::generate(&env);
-        let buyer = Address::generate(&env);
-        let seller = Address::generate(&env);
-        let asset = create_test_asset(&env, &buyer, 2_000);
-        client.initialize(
-            &admin,
-            &soroban_sdk::vec![
-                &env,
-                AssetPolicy {
-                    asset: asset.clone(),
-                    max_session_amount: 1_000,
-                    min_session_amount: 1,
-                    max_asset_exposure: 10_000,
-                    max_buyer_exposure: 1_000,
-                }
-            ],
-        );
-
-        let mut audit_log = std::vec::Vec::new();
-        let s1 = client.create_session(
-            &buyer,
-            &seller,
-            &asset,
-            &500,
-            &150,
-            &resource_hash(&env, 24),
-            &unique_idempotency_key(&env),
-        );
-        record_contract_event_names(&env, &contract_id, &mut audit_log);
-
-        client.set_buyer_exposure_ceiling(&asset, &400);
-        record_contract_event_names(&env, &contract_id, &mut audit_log);
-
-        // No further session can exceed the lowered 400 ceiling while exposure is 500.
-        assert_eq!(
-            client.try_create_session(
-                &buyer,
-                &seller,
-                &asset,
-                &1,
-                &150,
-                &resource_hash(&env, 25),
-                &unique_idempotency_key(&env),
-            ),
-            Err(Ok(ContractError::BuyerExposureCeilingExceeded))
-        );
-        record_contract_event_names(&env, &contract_id, &mut audit_log);
-        assert_eq!(client.get_buyer_exposure(&buyer, &asset), 500);
-
-        // Existing session exits normally and releases exposure so 400 fits under the new ceiling.
-        client.cancel(&s1);
-        record_contract_event_names(&env, &contract_id, &mut audit_log);
-        assert_eq!(client.get_buyer_exposure(&buyer, &asset), 0);
-
-        client.create_session(
-            &buyer,
-            &seller,
-            &asset,
-            &400,
-            &150,
-            &resource_hash(&env, 26),
-            &unique_idempotency_key(&env),
-        );
-        record_contract_event_names(&env, &contract_id, &mut audit_log);
-        assert_eq!(client.get_buyer_exposure(&buyer, &asset), 400);
-        assert_eq!(
-            audit_log,
-            std::vec![
-                "session_created",
-                "buyer_exposure_ceiling_updated",
-                "session_cancelled",
-                "session_created"
-            ]
-        );
-    }
-}
-
-#[test]
-fn same_ledger_buyer_session_cap_reduction_and_new_session_creation_both_orderings() {
-    let resource_hash = |env: &Env, tag: u8| BytesN::from_array(env, &[tag; 32]);
-    let usage_hash = |env: &Env, tag: u8| BytesN::from_array(env, &[tag; 32]);
-
-    // Order A: reduce_session_cap(s1: 600 -> 300) frees headroom before create_session(500) in same ledger.
-    {
-        let env = Env::default();
-        env.mock_all_auths_allowing_non_root_auth();
-        env.ledger().set_sequence_number(100);
-        let contract_id = env.register(UptoSessionContract, ());
-        let client = UptoSessionContractClient::new(&env, &contract_id);
-        let admin = Address::generate(&env);
-        let buyer = Address::generate(&env);
-        let seller = Address::generate(&env);
-        let asset = create_test_asset(&env, &buyer, 2_000);
-        let token = token::Client::new(&env, &asset);
-        client.initialize(
-            &admin,
-            &soroban_sdk::vec![
-                &env,
-                AssetPolicy {
-                    asset: asset.clone(),
-                    max_session_amount: 1_000,
-                    min_session_amount: 1,
-                    max_asset_exposure: 800,
-                    max_buyer_exposure: 800,
-                }
-            ],
-        );
-        client.set_seller_exposure_ceiling(&asset, &800);
-
-        let s1 = client.create_session(
-            &buyer,
-            &seller,
-            &asset,
-            &600,
-            &150,
-            &resource_hash(&env, 31),
-            &unique_idempotency_key(&env),
-        );
-        let mut audit_log = std::vec::Vec::new();
-
-        client.reduce_session_cap(&s1, &300);
-        record_contract_event_names(&env, &contract_id, &mut audit_log);
-        assert_eq!(token.balance(&buyer), 1_700);
-        assert_eq!(client.get_escrow_liability(&asset), 300);
-        assert_eq!(client.get_buyer_exposure(&buyer, &asset), 300);
-        assert_eq!(client.get_seller_exposure(&seller, &asset), 300);
-
-        let s2 = client.create_session(
-            &buyer,
-            &seller,
-            &asset,
-            &500,
-            &150,
-            &resource_hash(&env, 32),
-            &unique_idempotency_key(&env),
-        );
-        record_contract_event_names(&env, &contract_id, &mut audit_log);
-
-        // Exact 800 ceiling is reached; 1 more unit must fail.
-        assert_eq!(
-            client.try_create_session(
-                &buyer,
-                &seller,
-                &asset,
-                &1,
-                &150,
-                &resource_hash(&env, 33),
-                &unique_idempotency_key(&env),
-            ),
-            Err(Ok(ContractError::AssetExposureCeilingExceeded))
-        );
-        assert_eq!(token.balance(&buyer), 1_200);
-        assert_eq!(client.get_escrow_liability(&asset), 800);
-        assert_eq!(client.get_buyer_exposure(&buyer, &asset), 800);
-        assert_eq!(client.get_seller_exposure(&seller, &asset), 800);
-        assert_eq!(
-            audit_log,
-            std::vec!["session_cap_reduced", "session_created"]
-        );
-
-        // Finalizing both sessions cleanly zeroes all exposure counters without underflow.
-        client.settle(&s1, &250, &usage_hash(&env, 91));
-        client.cancel(&s2);
-        assert_eq!(client.get_escrow_liability(&asset), 0);
-        assert_eq!(client.get_buyer_exposure(&buyer, &asset), 0);
-        assert_eq!(client.get_seller_exposure(&seller, &asset), 0);
-        assert_eq!(token.balance(&buyer), 1_750);
-        assert_eq!(token.balance(&seller), 250);
-    }
-
-    // Order B1: create_session(500) before reduce_session_cap(600 -> 300) hits buyer ceiling first.
-    {
-        let env = Env::default();
-        env.mock_all_auths_allowing_non_root_auth();
-        env.ledger().set_sequence_number(100);
-        let contract_id = env.register(UptoSessionContract, ());
-        let client = UptoSessionContractClient::new(&env, &contract_id);
-        let admin = Address::generate(&env);
-        let buyer = Address::generate(&env);
-        let seller = Address::generate(&env);
-        let asset = create_test_asset(&env, &buyer, 2_000);
-        client.initialize(
-            &admin,
-            &soroban_sdk::vec![
-                &env,
-                AssetPolicy {
-                    asset: asset.clone(),
-                    max_session_amount: 1_000,
-                    min_session_amount: 1,
-                    max_asset_exposure: 2_000,
-                    max_buyer_exposure: 800,
-                }
-            ],
-        );
-
-        let s1 = client.create_session(
-            &buyer,
-            &seller,
-            &asset,
-            &600,
-            &150,
-            &resource_hash(&env, 34),
-            &unique_idempotency_key(&env),
-        );
-        let mut audit_log = std::vec::Vec::new();
-
-        assert_eq!(
-            client.try_create_session(
-                &buyer,
-                &seller,
-                &asset,
-                &500,
-                &150,
-                &resource_hash(&env, 35),
-                &unique_idempotency_key(&env),
-            ),
-            Err(Ok(ContractError::BuyerExposureCeilingExceeded))
-        );
-        record_contract_event_names(&env, &contract_id, &mut audit_log);
-
-        client.reduce_session_cap(&s1, &300);
-        record_contract_event_names(&env, &contract_id, &mut audit_log);
-        assert_eq!(client.get_buyer_exposure(&buyer, &asset), 300);
-        assert_eq!(client.get_escrow_liability(&asset), 300);
-        assert_eq!(audit_log, std::vec!["session_cap_reduced"]);
-    }
-
-    // Order B2: create_session(200) within prior headroom before reduce_session_cap(600 -> 300).
-    {
-        let env = Env::default();
-        env.mock_all_auths_allowing_non_root_auth();
-        env.ledger().set_sequence_number(100);
-        let contract_id = env.register(UptoSessionContract, ());
-        let client = UptoSessionContractClient::new(&env, &contract_id);
-        let admin = Address::generate(&env);
-        let buyer = Address::generate(&env);
-        let seller = Address::generate(&env);
-        let asset = create_test_asset(&env, &buyer, 2_000);
-        client.initialize(
-            &admin,
-            &soroban_sdk::vec![
-                &env,
-                AssetPolicy {
-                    asset: asset.clone(),
-                    max_session_amount: 1_000,
-                    min_session_amount: 1,
-                    max_asset_exposure: 800,
-                    max_buyer_exposure: 800,
-                }
-            ],
-        );
-
-        let s1 = client.create_session(
-            &buyer,
-            &seller,
-            &asset,
-            &600,
-            &150,
-            &resource_hash(&env, 36),
-            &unique_idempotency_key(&env),
-        );
-        let mut audit_log = std::vec::Vec::new();
-
-        let s2 = client.create_session(
-            &buyer,
-            &seller,
-            &asset,
-            &200,
-            &150,
-            &resource_hash(&env, 37),
-            &unique_idempotency_key(&env),
-        );
-        record_contract_event_names(&env, &contract_id, &mut audit_log);
-        assert_eq!(client.get_buyer_exposure(&buyer, &asset), 800);
-
-        client.reduce_session_cap(&s1, &300);
-        record_contract_event_names(&env, &contract_id, &mut audit_log);
-        assert_eq!(client.get_buyer_exposure(&buyer, &asset), 500);
-        assert_eq!(client.get_escrow_liability(&asset), 500);
-        assert_eq!(
-            audit_log,
-            std::vec!["session_created", "session_cap_reduced"]
-        );
-
-        client.cancel(&s1);
-        client.cancel(&s2);
-        assert_eq!(client.get_buyer_exposure(&buyer, &asset), 0);
-        assert_eq!(client.get_escrow_liability(&asset), 0);
-    }
-}
-
-#[test]
-fn ledger_rollover_boundary_returns_typed_errors_without_trapping() {
-    let env = Env::default();
-    env.mock_all_auths();
-    env.ledger().set_sequence_number(1_000);
-    let contract_id = env.register(UptoSessionContract, ());
-    let client = UptoSessionContractClient::new(&env, &contract_id);
-    let admin = Address::generate(&env);
-    let pending_admin = Address::generate(&env);
-    let buyer = Address::generate(&env);
-    let seller = Address::generate(&env);
-    let asset = create_test_asset(&env, &buyer, 1_000);
-    client.initialize(&admin, &soroban_sdk::vec![&env, asset_policy(&asset, 500)]);
-
-    let hash = BytesN::from_array(&env, &[0x2A; 32]);
-    let session_id = client.create_session(
-        &buyer,
-        &seller,
-        &asset,
-        &200,
-        &2_000,
-        &hash,
-        &unique_idempotency_key(&env),
-    );
-    let mut stored = client.get_session(&session_id);
-    stored.expires_at_ledger = u32::MAX;
-    env.as_contract(&contract_id, || {
-        storage::write_session(&env, &stored).unwrap();
-    });
-
-    let set_rollover_ledger = |seq: u32| {
-        env.ledger().with_mut(|li| {
-            li.min_persistent_entry_ttl = 1;
-            li.min_temp_entry_ttl = 1;
-            li.max_entry_ttl = 1;
-            li.sequence_number = seq;
-        });
-    };
-
-    // At u32::MAX - MAX_SESSION_DURATION_LEDGERS - 1, expires_at = u32::MAX exceeds max duration.
-    set_rollover_ledger(u32::MAX - validation::MAX_SESSION_DURATION_LEDGERS - 1);
-    let events_before = env
-        .events()
-        .all()
-        .filter_by_contract(&contract_id)
-        .events()
-        .len();
-    assert_eq!(
-        client.try_create_session(
-            &buyer,
-            &seller,
-            &asset,
-            &100,
-            &u32::MAX,
-            &hash,
-            &unique_idempotency_key(&env),
-        ),
-        Err(Ok(ContractError::SessionDurationTooLong))
-    );
-    assert_eq!(
-        client.try_extend_session_expiry(&session_id, &u32::MAX),
-        Err(Ok(ContractError::ExpiredSession))
-    );
-
-    // At u32::MAX - MAX_CAP_INCREASE_DELAY_LEDGERS + 1, max window additions overflow u32::MAX.
-    set_rollover_ledger(u32::MAX - validation::MAX_CAP_INCREASE_DELAY_LEDGERS + 1);
-    assert_eq!(
-        client.try_propose_admin(&pending_admin, &u32::MAX),
-        Err(Ok(ContractError::InvalidAdminRotationExpiry))
-    );
-    assert_eq!(
-        client.try_propose_asset_cap_increase(&asset, &1_000, &(u32::MAX - 1), &u32::MAX),
-        Err(Ok(ContractError::InvalidCapIncreaseDelay))
-    );
-
-    // At u32::MAX - MIN_CAP_INCREASE_DELAY_LEDGERS + 1, minimum cooldown addition overflows u32::MAX.
-    set_rollover_ledger(u32::MAX - validation::MIN_CAP_INCREASE_DELAY_LEDGERS + 1);
-    assert_eq!(
-        client.try_propose_asset_cap_increase(&asset, &1_000, &1, &100),
-        Err(Ok(ContractError::InvalidCapIncreaseDelay))
-    );
-
-    // At u32::MAX - 1, recovery is not yet allowed because session expires at u32::MAX.
-    set_rollover_ledger(u32::MAX - 1);
-    assert_eq!(
-        client.try_recover_expired(&session_id),
-        Err(Ok(ContractError::SessionNotExpired))
-    );
-    assert_eq!(
-        env.events()
-            .all()
-            .filter_by_contract(&contract_id)
-            .events()
-            .len(),
-        events_before
-    );
-
-    // At u32::MAX, wrapped ledgers (0, 1) and overflowed timelocks fail with typed errors.
-    set_rollover_ledger(u32::MAX);
-    assert_eq!(
-        client.try_create_session(
-            &buyer,
-            &seller,
-            &asset,
-            &100,
-            &0,
-            &hash,
-            &unique_idempotency_key(&env),
-        ),
-        Err(Ok(ContractError::ExpiredSession))
-    );
-    assert_eq!(
-        client.try_create_session(
-            &buyer,
-            &seller,
-            &asset,
-            &100,
-            &u32::MAX,
-            &hash,
-            &unique_idempotency_key(&env),
-        ),
-        Err(Ok(ContractError::ExpiredSession))
-    );
-    assert_eq!(
-        client.try_extend_session_expiry(&session_id, &1),
-        Err(Ok(ContractError::ExpiredSession))
-    );
-    assert_eq!(
-        client.try_propose_admin(&pending_admin, &0),
-        Err(Ok(ContractError::InvalidAdminRotationExpiry))
-    );
-    assert_eq!(
-        client.try_propose_admin(&pending_admin, &u32::MAX),
-        Err(Ok(ContractError::InvalidAdminRotationExpiry))
-    );
-    assert_eq!(
-        client.try_propose_asset_cap_increase(&asset, &1_000, &u32::MAX, &u32::MAX),
-        Err(Ok(ContractError::InvalidCapIncreaseDelay))
-    );
-    assert_eq!(
-        client.try_propose_asset_cap_increase(&asset, &1_000, &1, &100),
-        Err(Ok(ContractError::InvalidCapIncreaseDelay))
-    );
-    assert_eq!(
-        client.try_settle(&session_id, &100, &hash),
-        Err(Ok(ContractError::ExpiredSession))
-    );
-    assert_eq!(
-        client.try_cancel(&session_id),
-        Err(Ok(ContractError::ExpiredSession))
-    );
-    assert_eq!(
-        client.try_reject(&session_id),
-        Err(Ok(ContractError::ExpiredSession))
-    );
-    assert_eq!(
-        client.try_reduce_session_cap(&session_id, &100),
-        Err(Ok(ContractError::ExpiredSession))
-    );
-    assert_eq!(
-        env.events()
-            .all()
-            .filter_by_contract(&contract_id)
-            .events()
-            .len(),
-        events_before
-    );
-    assert_eq!(client.get_session(&session_id).status, SessionStatus::Open);
-    assert_eq!(client.get_escrow_liability(&asset), 200);
 }

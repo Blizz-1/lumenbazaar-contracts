@@ -95,6 +95,9 @@ fn fixture() -> Fixture {
 }
 
 fn open(f: &Fixture, buyer: &Address, asset: &Address, amount: i128, salt: u8) -> BytesN<32> {
+    let tag = hash(&f.env, salt);
+    f.client
+        .create_session(buyer, &f.seller, asset, &amount, &50, &tag, &tag)
     f.client.create_session(
         buyer,
         &f.seller,
@@ -113,6 +116,11 @@ fn try_open(
     amount: i128,
     salt: u8,
 ) -> Result<BytesN<32>, ContractError> {
+    let tag = hash(&f.env, salt);
+    match f
+        .client
+        .try_create_session(buyer, &f.seller, asset, &amount, &50, &tag, &tag)
+    {
     match f.client.try_create_session(
         buyer,
         &f.seller,
@@ -262,6 +270,7 @@ fn asset_ceiling_is_exact_and_checked_before_authorization_or_transfer() {
         &100,
         &50,
         &hash(&env, 1),
+        &hash(&env, 1),
         &next_idempotency_key(&env),
     );
     client.create_session(
@@ -270,6 +279,7 @@ fn asset_ceiling_is_exact_and_checked_before_authorization_or_transfer() {
         &asset,
         &200,
         &50,
+        &hash(&env, 2),
         &hash(&env, 2),
         &next_idempotency_key(&env),
     );
@@ -284,6 +294,7 @@ fn asset_ceiling_is_exact_and_checked_before_authorization_or_transfer() {
             &asset,
             &1,
             &50,
+            &hash(&env, 3),
             &hash(&env, 3),
             &next_idempotency_key(&env),
         ),
@@ -439,6 +450,7 @@ fn deprecated_assets_reject_creation_but_still_release_capacity() {
     f.client
         .initialize(&f.admin, &vec![&f.env, policy(&asset, 500, 500, 500)]);
     let session = open(&f, &buyer, &asset, 200, 1);
+    f.client.deprecate_asset(&asset, &hash(&f.env, 9));
     f.client.deprecate_asset(&asset, &reason(&f.env, 0xda));
     assert_eq!(
         try_open(&f, &buyer, &asset, 1, 2),
@@ -450,6 +462,7 @@ fn deprecated_assets_reject_creation_but_still_release_capacity() {
     f.env.as_contract(&f.contract_id, || {
         assert_eq!(storage::read_liability(&f.env, &asset), 0);
     });
+    f.client.remove_asset(&asset, &hash(&f.env, 9));
     f.client.remove_asset(&asset, &reason(&f.env, 0xdb));
     assert_eq!(
         f.client.try_get_buyer_exposure(&buyer, &asset),
@@ -513,6 +526,7 @@ fn buyer_ceiling_is_checked_before_buyer_authorization() {
         &200,
         &50,
         &hash(&env, 1),
+        &hash(&env, 1),
         &next_idempotency_key(&env),
     );
 
@@ -524,6 +538,7 @@ fn buyer_ceiling_is_checked_before_buyer_authorization() {
             &asset,
             &1,
             &50,
+            &hash(&env, 2),
             &hash(&env, 2),
             &next_idempotency_key(&env),
         ),
@@ -828,6 +843,7 @@ fn solvency_is_read_only_authorization_free_and_covers_deprecated_assets() {
     f.client
         .initialize(&f.admin, &vec![&f.env, policy(&asset, 100, 100, 100)]);
     let session = open(&f, &buyer, &asset, 100, 1);
+    f.client.deprecate_asset(&asset, &hash(&f.env, 9));
     f.client.deprecate_asset(&asset, &reason(&f.env, 0xdc));
 
     f.env.set_auths(&[]);
@@ -846,6 +862,7 @@ fn solvency_is_read_only_authorization_free_and_covers_deprecated_assets() {
 
     f.env.mock_all_auths_allowing_non_root_auth();
     f.client.cancel(&session);
+    f.client.remove_asset(&asset, &hash(&f.env, 9));
     f.client.remove_asset(&asset, &reason(&f.env, 0xdd));
     assert_eq!(
         f.client.try_get_asset_solvency(&asset),

@@ -1,3 +1,4 @@
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
 #![no_std]
 
 use soroban_sdk::{
@@ -717,10 +718,13 @@ fn read_policy(env: &Env, agent: &Address) -> Result<SpendingPolicy, PolicyWalle
 fn has_duplicate_addresses(items: &Vec<Address>) -> bool {
     let len = items.len();
     for i in 0..len {
-        let item = items.get(i).unwrap();
-        for j in (i + 1)..len {
-            if item == items.get(j).unwrap() {
-                return true;
+        if let Some(item) = items.get(i) {
+            for j in (i + 1)..len {
+                if let Some(other) = items.get(j) {
+                    if item == other {
+                        return true;
+                    }
+                }
             }
         }
     }
@@ -730,10 +734,13 @@ fn has_duplicate_addresses(items: &Vec<Address>) -> bool {
 fn has_duplicate_hashes(items: &Vec<BytesN<32>>) -> bool {
     let len = items.len();
     for i in 0..len {
-        let item = items.get(i).unwrap();
-        for j in (i + 1)..len {
-            if item == items.get(j).unwrap() {
-                return true;
+        if let Some(item) = items.get(i) {
+            for j in (i + 1)..len {
+                if let Some(other) = items.get(j) {
+                    if item == other {
+                        return true;
+                    }
+                }
             }
         }
     }
@@ -765,7 +772,10 @@ fn validate_policy(env: &Env, policy: &SpendingPolicy) -> Result<(), PolicyWalle
 
     let seller_limits_len = policy.seller_limits.len();
     for i in 0..seller_limits_len {
-        let limit = policy.seller_limits.get(i).unwrap();
+        let limit = match policy.seller_limits.get(i) {
+            Some(l) => l,
+            None => return Err(PolicyWalletError::InvalidPolicy),
+        };
         if !policy.allowed_sellers.contains(&limit.seller) {
             return Err(PolicyWalletError::InvalidPolicy);
         }
@@ -778,16 +788,20 @@ fn validate_policy(env: &Env, policy: &SpendingPolicy) -> Result<(), PolicyWalle
             return Err(PolicyWalletError::InvalidPolicy);
         }
         for j in (i + 1)..seller_limits_len {
-            let other = policy.seller_limits.get(j).unwrap();
-            if limit.seller == other.seller {
-                return Err(PolicyWalletError::InvalidPolicy);
+            if let Some(other) = policy.seller_limits.get(j) {
+                if limit.seller == other.seller {
+                    return Err(PolicyWalletError::InvalidPolicy);
+                }
             }
         }
     }
 
     let resource_limits_len = policy.resource_limits.len();
     for i in 0..resource_limits_len {
-        let limit = policy.resource_limits.get(i).unwrap();
+        let limit = match policy.resource_limits.get(i) {
+            Some(l) => l,
+            None => return Err(PolicyWalletError::InvalidPolicy),
+        };
         if !policy
             .allowed_resource_hashes
             .contains(&limit.resource_hash)
@@ -803,9 +817,10 @@ fn validate_policy(env: &Env, policy: &SpendingPolicy) -> Result<(), PolicyWalle
             return Err(PolicyWalletError::InvalidPolicy);
         }
         for j in (i + 1)..resource_limits_len {
-            let other = policy.resource_limits.get(j).unwrap();
-            if limit.resource_hash == other.resource_hash {
-                return Err(PolicyWalletError::InvalidPolicy);
+            if let Some(other) = policy.resource_limits.get(j) {
+                if limit.resource_hash == other.resource_hash {
+                    return Err(PolicyWalletError::InvalidPolicy);
+                }
             }
         }
     }
@@ -859,8 +874,7 @@ fn validate_payment(
         return Err(PolicyWalletError::AmountExceedsDailyCap);
     }
 
-    for i in 0..policy.seller_limits.len() {
-        let seller_limit = policy.seller_limits.get(i).unwrap();
+    for seller_limit in policy.seller_limits.iter() {
         if seller_limit.seller == *seller {
             if amount > seller_limit.max_amount_per_payment {
                 return Err(PolicyWalletError::AmountExceedsPaymentCap);
@@ -876,8 +890,7 @@ fn validate_payment(
         }
     }
 
-    for i in 0..policy.resource_limits.len() {
-        let resource_limit = policy.resource_limits.get(i).unwrap();
+    for resource_limit in policy.resource_limits.iter() {
         if resource_limit.resource_hash == *resource_hash {
             if amount > resource_limit.max_amount_per_payment {
                 return Err(PolicyWalletError::AmountExceedsPaymentCap);
