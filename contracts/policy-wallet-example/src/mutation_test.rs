@@ -54,6 +54,7 @@ fn make_policy(
     SpendingPolicy {
         revision: 0,
         agent: agent.clone(),
+        revision: 0,
         max_amount_per_payment: max_per_payment,
         max_amount_per_day: max_per_day,
         max_authorizations_per_day: 100,

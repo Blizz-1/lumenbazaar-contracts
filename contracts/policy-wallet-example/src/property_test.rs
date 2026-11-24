@@ -211,6 +211,7 @@ fn build_policy(env: &Env, actors: &Actors, spec: &PolicySpec) -> SpendingPolicy
     }
     SpendingPolicy {
         agent: actors.agent.clone(),
+        revision: 0,
         max_amount_per_payment: spec.per_payment,
         max_amount_per_day: spec.per_day,
         max_authorizations_per_day: spec.max_authorizations,

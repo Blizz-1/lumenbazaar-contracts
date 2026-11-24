@@ -128,6 +128,7 @@ pub fn policy(data: &[u8]) {
 
     let mut policy = SpendingPolicy {
         agent: agent.clone(),
+        revision: 0,
         max_amount_per_payment: per_payment,
         max_amount_per_day: per_day,
         max_authorizations_per_day: max_authorizations,

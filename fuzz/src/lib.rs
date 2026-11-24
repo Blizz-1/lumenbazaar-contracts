@@ -18,10 +18,12 @@
 pub mod input;
 
 mod amount;
+mod multi_asset;
 mod policy;
 mod session;
 
 pub use amount::token_amount;
+pub use multi_asset::multi_asset;
 pub use policy::policy;
 pub use session::{create, settle};
 
@@ -44,6 +46,7 @@ pub const TARGETS: &[(&str, Target)] = &[
     ("settle", settle),
     ("policy", policy),
     ("token_amount", token_amount),
+    ("multi_asset", multi_asset),
 ];
 
 /// Maps a typed `try_` client result to `Ok` or a defined contract error, and fails on anything

@@ -2076,6 +2076,15 @@ fn require_admin(env: &Env) -> Result<Address, ContractError> {
 }
 
 #[cfg(test)]
+pub(crate) fn test_idempotency_key(env: &Env) -> BytesN<32> {
+    static IDEM_COUNTER: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(1);
+    let n = IDEM_COUNTER.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+    let mut bytes = [0u8; 32];
+    bytes[..8].copy_from_slice(&n.to_be_bytes());
+    BytesN::from_array(env, &bytes)
+}
+
+#[cfg(test)]
 mod encoding_vectors_test;
 #[cfg(test)]
 mod exposure_test;

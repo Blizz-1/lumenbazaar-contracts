@@ -238,6 +238,7 @@ fn mutation_buyer_auth_wrong_party_in_create_session_is_caught() {
 
     let idempotency_key = super::unique_idempotency_key(&env);
     // Attacker provides their own auth for buyer's create_session — must fail.
+    let idempotency_key = crate::test_idempotency_key(&env);
     let result = client
         .mock_auths(&[MockAuth {
             address: &attacker,

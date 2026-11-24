@@ -55,6 +55,7 @@ cargo +nightly fuzz run --fuzz-dir fuzz/libfuzzer create -- -max_total_time=600 
 cargo +nightly fuzz run --fuzz-dir fuzz/libfuzzer settle -- -max_total_time=600 -max_len=256
 cargo +nightly fuzz run --fuzz-dir fuzz/libfuzzer policy -- -max_total_time=600 -max_len=256
 cargo +nightly fuzz run --fuzz-dir fuzz/libfuzzer token_amount -- -max_total_time=600 -max_len=256
+cargo +nightly fuzz run --fuzz-dir fuzz/libfuzzer multi_asset -- -max_total_time=600 -max_len=256
 ```
 
 libFuzzer does not read the hex seeds directly. Convert one with
