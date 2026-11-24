@@ -263,6 +263,7 @@ fn production_escrow_funds_and_settles_with_exact_authorization_trees() {
     let client = UptoSessionContractClient::new(&env, &contract_id);
     let asset = create_test_asset(&env, &identities.buyer, 500);
     let resource_hash = BytesN::from_array(&env, &[41; 32]);
+    let idempotency_key = BytesN::from_array(&env, &[44; 32]);
     let usage_hash = BytesN::from_array(&env, &[42; 32]);
     let idempotency_key = BytesN::from_array(&env, &[43; 32]);
     let asset_policies = soroban_sdk::vec![
