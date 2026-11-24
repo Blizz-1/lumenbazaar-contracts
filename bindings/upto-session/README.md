@@ -188,49 +188,23 @@ All contract failures use stable numeric `u32` error codes (`1..=60`). Use `deco
 | 59 | `SequenceExhausted` | v3 addition | Sequence Exhaustion & Idempotency Protection |
 | 60 | `IdempotencyConflict` | v3 addition | Sequence Exhaustion & Idempotency Protection |
 
-## Events Reference
+## Simulation without signing
 
-Every event publishes one prefix topic (`Symbol`) and one bounded 32-byte indexed topic (`session_id` or `Address`), plus a data map containing `event_version: u32`. See [Indexed Event Topics](../../docs/backend-integration-handoff.md#indexed-event-topics).
+`simulateContractCall(() => contract.create_session(args))` returns a typed
+`ready`, `restore_required`, `contract_error`, or `network_error` result. The
+helper exposes the footprint, resource fee, and authorization requirements but
+has no signer and never submits a transaction.
 
-| Event | Prefix Topic | Indexed Topic | Data Fields | Compatibility |
-| --- | --- | --- | --- | --- |
-| `AdminRotationAccepted` | `admin_rotation_accepted` |  | `previous_admin: string (Address)`<br>`event_version: u32 (number)` | v3 addition (`event_version: 1` or `3`) |
-| `AdminRotationCancelled` | `admin_rotation_cancelled` |  | `current_admin: string (Address)`<br>`event_version: u32 (number)` | v3 addition (`event_version: 1` or `3`) |
-| `AdminRotationProposed` | `admin_rotation_proposed` |  | `current_admin: string (Address)`<br>`expires_at_ledger: u32 (number)`<br>`event_version: u32 (number)` | v3 addition (`event_version: 1` or `3`) |
-| `AssetActivated` | `asset_activated` |  | `decimals: u32 (number)`<br>`event_version: u32 (number)` | v3 addition (`event_version: 1` or `3`) |
-| `AssetDeprecated` | `asset_deprecated` |  | `admin: string (Address)`<br>`reason_commitment: BytesN<32> (Buffer)`<br>`event_version: u32 (number)` | v3 addition (`event_version: 1` or `3`) |
-| `AssetExposureCeilingUpdated` | `asset_exposure_ceiling_updated` |  | `admin: string (Address)`<br>`previous_ceiling: i128 (bigint)`<br>`new_ceiling: i128 (bigint)`<br>`current_liability: i128 (bigint)`<br>`event_version: u32 (number)` | v3 addition (`event_version: 1` or `3`) |
-| `AssetRemoved` | `asset_removed` |  | `admin: string (Address)`<br>`reason_commitment: BytesN<32> (Buffer)`<br>`event_version: u32 (number)` | v3 addition (`event_version: 1` or `3`) |
-| `AssetSessionCapUpdated` | `asset_session_cap_updated` |  | `admin: string (Address)`<br>`previous_max_session_amount: i128 (bigint)`<br>`new_max_session_amount: i128 (bigint)`<br>`event_version: u32 (number)` | v3 addition (`event_version: 1` or `3`) |
-| `BuyerExposureCeilingUpdated` | `buyer_exposure_ceiling_updated` |  | `admin: string (Address)`<br>`previous_ceiling: i128 (bigint)`<br>`new_ceiling: i128 (bigint)`<br>`event_version: u32 (number)` | v3 addition (`event_version: 1` or `3`) |
-| `CapIncreaseCancelled` | `cap_increase_cancelled` |  | `admin: string (Address)`<br>`proposed_max_amount: i128 (bigint)`<br>`event_version: u32 (number)` | v3 addition (`event_version: 1` or `3`) |
-| `CapIncreaseProposed` | `cap_increase_proposed` |  | `admin: string (Address)`<br>`proposed_max_amount: i128 (bigint)`<br>`active_at_ledger: u32 (number)`<br>`expires_at_ledger: u32 (number)`<br>`event_version: u32 (number)` | v3 addition (`event_version: 1` or `3`) |
-| `CreationPaused` | `creation_paused` |  | `event_version: u32 (number)` | v3 addition (`event_version: 1` or `3`) |
-| `CreationResumed` | `creation_resumed` |  | `event_version: u32 (number)` | v3 addition (`event_version: 1` or `3`) |
-| `MaxBuyerOpenSessionsUpdated` | `max_buyer_open_sessions_updated` |  | `previous_limit: u32 (number)`<br>`new_limit: u32 (number)`<br>`event_version: u32 (number)` | v3 addition (`event_version: 1` or `3`) |
-| `MaxSellerOpenSessionsUpdated` | `max_seller_open_sessions_updated` |  | `previous_limit: u32 (number)`<br>`new_limit: u32 (number)`<br>`event_version: u32 (number)` | v3 addition (`event_version: 1` or `3`) |
-| `SellerExposureCeilingUpdated` | `seller_exposure_ceiling_updated` |  | `admin: string (Address)`<br>`previous_ceiling: i128 (bigint)`<br>`new_ceiling: i128 (bigint)`<br>`event_version: u32 (number)` | v3 addition (`event_version: 1` or `3`) |
-| `SessionCancelled` | `session_cancelled` |  | `buyer: string (Address)`<br>`asset: string (Address)`<br>`event_version: u32 (number)`<br>`refunded_amount: i128 (bigint)` | v2 + v3 (`event_version: 2`) |
-| `SessionCapReduced` | `session_cap_reduced` |  | `buyer: string (Address)`<br>`asset: string (Address)`<br>`previous_max_amount: i128 (bigint)`<br>`new_max_amount: i128 (bigint)`<br>`refunded_amount: i128 (bigint)`<br>`event_version: u32 (number)` | v3 addition (`event_version: 1` or `3`) |
-| `SessionCreated` | `session_created` |  | `buyer: string (Address)`<br>`seller: string (Address)`<br>`asset: string (Address)`<br>`max_amount: i128 (bigint)`<br>`expires_at_ledger: u32 (number)`<br>`resource_hash: BytesN<32> (Buffer)`<br>`event_version: u32 (number)`<br>`escrowed_amount: i128 (bigint)` | v2 + v3 (`event_version: 2`) |
-| `SessionExpiryExtended` | `session_expiry_extended` |  | `buyer: string (Address)`<br>`seller: string (Address)`<br>`previous_expires_at_ledger: u32 (number)`<br>`new_expires_at_ledger: u32 (number)`<br>`event_version: u32 (number)` | v3 addition (`event_version: 1` or `3`) |
-| `SessionRecovered` | `session_recovered` |  | `buyer: string (Address)`<br>`asset: string (Address)`<br>`event_version: u32 (number)`<br>`refunded_amount: i128 (bigint)`<br>`expired_at_ledger: u32 (number)`<br>`recovered_at_ledger: u32 (number)` | v2 + v3 (`event_version: 2`) |
-| `SessionRejected` | `session_rejected` |  | `seller: string (Address)`<br>`buyer: string (Address)`<br>`asset: string (Address)`<br>`event_version: u32 (number)`<br>`refunded_amount: i128 (bigint)` | v3 addition (`event_version: 1` or `3`) |
-| `SessionSettled` | `session_settled` |  | `seller: string (Address)`<br>`asset: string (Address)`<br>`actual_amount: i128 (bigint)`<br>`usage_hash: BytesN<32> (Buffer)`<br>`event_version: u32 (number)`<br>`refunded_amount: i128 (bigint)` | v2 + v3 (`event_version: 2`) |
-| `SurplusRecovered` | `surplus_recovered` |  | `recipient: string (Address)`<br>`amount: i128 (bigint)`<br>`event_version: u32 (number)` | v3 addition (`event_version: 1` or `3`) |
+Published tarballs include `PROVENANCE.json`, generated by `npm pack`. Verify
+the package checksums and recorded repository revision with
+`node scripts/verify-binding-attestation.mjs bindings/upto-session`.
 
-## Handwritten Domain, Receipt & Error Helpers
+Use `createValidatedClient(options, deploymentIdentity)` when constructing a
+client from deployment metadata. It rejects malformed or mismatched contract
+IDs and passphrases before RPC use. Custom networks must provide both a
+manifest SHA-256 and an explicit stable `networkId`.
 
-| Export | Source Module | Purpose |
-| --- | --- | --- |
-| `deriveSessionId(input)` | `src/sessionId.ts` | Derives the v3 domain-separated `session_id` (64-char lowercase hex) from `SessionIdInputV3`. |
-| `deriveSessionIdPreimage(input)` | `src/sessionId.ts` | Returns the raw Soroban `ScVal` XDR preimage `Buffer` for `(domain_xdr, payload_xdr)`. |
-| `validateSessionIdInput(input)` | `src/sessionId.ts` | Validates v3 session ID derivation inputs and fails closed on v2 or malformed arguments. |
-| `canonicalizeUsageReceipt(receipt)` | `src/usageReceipt.ts` | Serializes a v1 usage receipt into canonical compact UTF-8 JSON. |
-| `hashUsageReceipt(receipt)` | `src/usageReceipt.ts` | Computes the 32-byte SHA-256 `measurement_hash` hex for a canonical v1 usage receipt. |
-| `parseCanonicalUsageReceipt(json)` | `src/usageReceipt.ts` | Validates and parses a canonical v1 usage receipt JSON string. |
-| `decodeContractError(error)` | `src/contractErrors.ts` | Decodes thrown, simulated, or RPC failures into `contract`, `unknown_contract`, `malformed_contract`, `host`, or `other`. |
-| `isContractError(error, name)` | `src/contractErrors.ts` | Type-safe predicate matching a known `ContractErrorName`. |
+As long as your editor is configured to show JavaScript/TypeScript documentation, you can pause your typing at that `|` to get a list of all exports and inline-documentation for each. It exports a separate [async](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Statements/async_function) function for each method in the smart contract, with documentation for each generated from the comments the contract's author included in the original source code.
 
 <!-- lumenbazaar:transaction-evidence (appended by scripts/generate-bindings.mjs; edit scripts/templates/README.transactionEvidence.md) -->
 

@@ -1,3 +1,4 @@
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
 #![no_std]
 #![allow(clippy::too_many_arguments)]
 
@@ -10,12 +11,16 @@ pub mod validation;
 
 pub use errors::ContractError;
 pub use types::{
-    AdminRotation, AssetLifecycle, AssetPolicy, AssetPolicyResponse, AssetSolvency,
-    AssetSolvencySnapshot, AssetStatus, BatchRecoveryResult, BatchRecoveryStatus,
-    BatchSessionResult, BatchSessionStatus, CapIncreaseProposal, CommitmentDomainMetadata,
-    ContractConfiguration, OperationalState, RecoverabilityStatus, Session, SessionRecoverability,
-    SessionStatus, SessionStatusResponse, SettlementPreview, SettlementRejectionReason,
-    SolvencyAssetState, SolvencyStatus,
+    AdminRotation, AdminRotationStatus, AssetExposureHeadroom, AssetLifecycle, AssetPolicy,
+    AssetPolicyResponse, AssetSolvency, AssetSolvencySnapshot, AssetStatus, AuditIndexCategory,
+    BatchRecoveryResult, BatchRecoveryStatus, BatchSessionResult, BatchSessionStatus,
+    BuyerExposureHeadroom, BuyerSessionCount, CancellationPreview, CancellationRejectionReason,
+    CapIncreaseProposal, CapIncreaseStatus, CapIncreaseStatusResponse, CommitmentDomainMetadata,
+    CommitmentKind, ContractConfiguration, OperationalState, RecoverabilityStatus,
+    SellerExposureHeadroom, Session, SessionIndexAuditResult, SessionIndexMismatch,
+    SessionRecoverability, SessionStateCounts, SessionStatus, SessionStatusResponse,
+    SettlementPreview, SettlementRejectionReason, SolvencyAssetState, SolvencyStatus,
+    TerminalEvidence, TerminalEvidenceDigest,
 };
 
 use soroban_sdk::{contract, contractimpl, token, Address, BytesN, Env, Vec};
@@ -34,6 +39,9 @@ pub const MAX_RECOVERY_BATCH_SIZE: u32 = 8;
 pub const MAX_SOLVENCY_QUERY_ASSETS: u32 = 16;
 pub const SOLVENCY_RESPONSE_VERSION: u32 = 1;
 pub const MAX_SESSION_QUERY_BATCH_SIZE: u32 = 8;
+pub const MAX_INDEX_AUDIT_BATCH_SIZE: u32 = 16;
+pub const TERMINAL_EVIDENCE_VERSION: u32 = 1;
+pub const BUYER_SESSION_COUNT_RESPONSE_VERSION: u32 = 1;
 
 #[contractimpl]
 #[allow(clippy::too_many_arguments)]
@@ -81,9 +89,12 @@ impl UptoSessionContract {
             storage::write_buyer_exposure_ceiling(&env, &policy.asset, policy.max_buyer_exposure);
             events::publish_asset_activated(&env, &policy.asset, probe.decimals);
         }
+        let configuration_digest =
+            ids::initialization_configuration_digest(&env, &admin, &asset_policies);
         storage::write_supported_assets(&env, &supported_assets);
         storage::write_operational_state(&env, &OperationalState::Active);
         storage::write_admin(&env, &admin);
+        storage::write_initialization_configuration_digest(&env, &configuration_digest);
         storage::write_storage_layout_version(&env);
         storage::extend_instance_ttl(&env);
 
@@ -243,6 +254,145 @@ impl UptoSessionContract {
         storage::read_cap_increase_proposal(&env, &asset)
     }
 
+    pub fn get_asset_cap_increase_status(
+        env: Env,
+        asset: Address,
+    ) -> Result<CapIncreaseStatusResponse, ContractError> {
+        if !storage::has_admin(&env) {
+            return Err(ContractError::NotInitialized);
+        }
+        let proposal_opt = storage::read_cap_increase_proposal(&env, &asset);
+        let proposal = match proposal_opt {
+            Some(p) => p,
+            None => {
+                return Ok(CapIncreaseStatusResponse {
+                    status: CapIncreaseStatus::Missing,
+                    proposed_max_amount: None,
+                    active_at_ledger: None,
+                    expires_at_ledger: None,
+                    is_ready: false,
+                });
+            }
+        };
+
+        let current_ledger = env.ledger().sequence();
+        let is_deprecated = storage::read_asset_status(&env, &asset) == Some(AssetStatus::Deprecated);
+
+        let status = if current_ledger < proposal.active_at_ledger {
+            CapIncreaseStatus::Waiting
+        } else if current_ledger >= proposal.expires_at_ledger {
+            CapIncreaseStatus::Expired
+        } else if is_deprecated {
+            CapIncreaseStatus::Waiting
+        } else {
+            CapIncreaseStatus::Ready
+        };
+
+        let is_ready = status == CapIncreaseStatus::Ready;
+
+        Ok(CapIncreaseStatusResponse {
+            status,
+            proposed_max_amount: Some(proposal.proposed_max_amount),
+            active_at_ledger: Some(proposal.active_at_ledger),
+            expires_at_ledger: Some(proposal.expires_at_ledger),
+            is_ready,
+        })
+    }
+
+    pub fn audit_session_index_consistency(
+        env: Env,
+        session_ids: Vec<BytesN<32>>,
+    ) -> Result<SessionIndexAuditResult, ContractError> {
+        if !storage::has_admin(&env) {
+            return Err(ContractError::NotInitialized);
+        }
+        if session_ids.len() > MAX_INDEX_AUDIT_BATCH_SIZE {
+            return Err(ContractError::InvalidBatchSize);
+        }
+
+        let mut mismatches: Vec<SessionIndexMismatch> = Vec::new(&env);
+
+        for session_id in session_ids.iter() {
+            let session = match storage::read_session(&env, &session_id) {
+                Some(s) => s,
+                None => {
+                    mismatches.push_back(SessionIndexMismatch {
+                        session_id: session_id.clone(),
+                        category: AuditIndexCategory::SessionNotFound,
+                    });
+                    continue;
+                }
+            };
+
+            // 1. Verify resource commitment index
+            let indexed_resource_sessions = storage::read_sessions_by_commitment(
+                &env,
+                &CommitmentKind::Resource,
+                &session.resource_hash,
+            );
+            if !indexed_resource_sessions.iter().any(|id| id == session_id) {
+                mismatches.push_back(SessionIndexMismatch {
+                    session_id: session_id.clone(),
+                    category: AuditIndexCategory::ResourceCommitment,
+                });
+            }
+
+            // 2. If session has usage hash, verify usage commitment index
+            if let Some(usage_hash) = &session.usage_hash {
+                let indexed_usage_sessions = storage::read_sessions_by_commitment(
+                    &env,
+                    &CommitmentKind::Usage,
+                    usage_hash,
+                );
+                if !indexed_usage_sessions.iter().any(|id| id == session_id) {
+                    mismatches.push_back(SessionIndexMismatch {
+                        session_id: session_id.clone(),
+                        category: AuditIndexCategory::UsageCommitment,
+                    });
+                }
+            }
+
+            // 3. Verify seller state count index consistency
+            let seller_counts = storage::read_seller_session_state_counts(&env, &session.seller);
+            let has_positive_count = match session.status {
+                SessionStatus::Open => seller_counts.open > 0,
+                SessionStatus::Settled => seller_counts.settled > 0,
+                SessionStatus::Cancelled => seller_counts.cancelled > 0,
+                SessionStatus::Expired => seller_counts.expired > 0,
+                SessionStatus::Rejected => seller_counts.rejected > 0,
+            };
+            if !has_positive_count {
+                mismatches.push_back(SessionIndexMismatch {
+                    session_id: session_id.clone(),
+                    category: AuditIndexCategory::SellerStateCount,
+                });
+            }
+
+            // 4. If Open, check open session counters
+            if session.status == SessionStatus::Open {
+                if storage::read_buyer_open_sessions(&env, &session.buyer) == 0 {
+                    mismatches.push_back(SessionIndexMismatch {
+                        session_id: session_id.clone(),
+                        category: AuditIndexCategory::BuyerOpenSessions,
+                    });
+                }
+                if storage::read_seller_open_sessions(&env, &session.seller) == 0 {
+                    mismatches.push_back(SessionIndexMismatch {
+                        session_id: session_id.clone(),
+                        category: AuditIndexCategory::SellerOpenSessions,
+                    });
+                }
+            }
+        }
+
+        let is_consistent = mismatches.is_empty();
+        Ok(SessionIndexAuditResult {
+            audited_count: session_ids.len(),
+            mismatches,
+            is_consistent,
+        })
+    }
+
     pub fn get_seller_exposure_ceiling(env: Env, asset: Address) -> Result<i128, ContractError> {
         if !storage::is_supported_asset(&env, &asset) {
             return Err(ContractError::UnsupportedAsset);
@@ -263,6 +413,27 @@ impl UptoSessionContract {
             return Err(ContractError::UnsupportedAsset);
         }
         Ok(storage::read_seller_exposure(&env, &seller, &asset))
+    }
+
+    pub fn get_seller_exposure_headroom(
+        env: Env,
+        seller: Address,
+        asset: Address,
+    ) -> Result<SellerExposureHeadroom, ContractError> {
+        if !storage::has_admin(&env) {
+            return Err(ContractError::NotInitialized);
+        }
+        if !storage::is_supported_asset(&env, &asset) {
+            return Err(ContractError::UnsupportedAsset);
+        }
+        let exposure = storage::read_seller_exposure(&env, &seller, &asset);
+        let ceiling = storage::read_seller_exposure_ceiling(&env, &asset);
+        let headroom = ceiling.map(|c| c.saturating_sub(exposure));
+        Ok(SellerExposureHeadroom {
+            ceiling,
+            exposure,
+            headroom,
+        })
     }
 
     pub fn set_max_buyer_open_sessions(env: Env, limit: u32) -> Result<(), ContractError> {
@@ -288,6 +459,20 @@ impl UptoSessionContract {
             return Err(ContractError::NotInitialized);
         }
         Ok(storage::read_buyer_open_sessions(&env, &buyer))
+    }
+
+    pub fn get_buyer_session_count(
+        env: Env,
+        buyer: Address,
+    ) -> Result<BuyerSessionCount, ContractError> {
+        if !storage::has_admin(&env) {
+            return Err(ContractError::NotInitialized);
+        }
+        Ok(BuyerSessionCount {
+            response_version: BUYER_SESSION_COUNT_RESPONSE_VERSION,
+            open: storage::read_buyer_open_sessions(&env, &buyer),
+            total: storage::read_buyer_total_sessions(&env, &buyer),
+        })
     }
 
     pub fn set_max_seller_open_sessions(env: Env, limit: u32) -> Result<(), ContractError> {
@@ -430,6 +615,27 @@ impl UptoSessionContract {
             .ok_or(ContractError::ExposureCeilingNotConfigured)
     }
 
+    pub fn get_asset_exposure_headroom(
+        env: Env,
+        asset: Address,
+    ) -> Result<AssetExposureHeadroom, ContractError> {
+        if !storage::has_admin(&env) {
+            return Err(ContractError::NotInitialized);
+        }
+        if !storage::is_supported_asset(&env, &asset) {
+            return Err(ContractError::UnsupportedAsset);
+        }
+        let ceiling = storage::read_asset_exposure_ceiling(&env, &asset)
+            .ok_or(ContractError::ExposureCeilingNotConfigured)?;
+        let exposure = storage::read_liability(&env, &asset);
+        let headroom = ceiling.saturating_sub(exposure);
+        Ok(AssetExposureHeadroom {
+            ceiling,
+            exposure,
+            headroom,
+        })
+    }
+
     /// Admin-only: sets the ceiling on open escrow any single buyer may hold
     /// for `asset`. Each buyer has an independent counter.
     pub fn set_buyer_exposure_ceiling(
@@ -481,6 +687,28 @@ impl UptoSessionContract {
             }
             None => Err(ContractError::UnsupportedAsset),
         }
+    }
+
+    pub fn get_buyer_exposure_headroom(
+        env: Env,
+        buyer: Address,
+        asset: Address,
+    ) -> Result<BuyerExposureHeadroom, ContractError> {
+        if !storage::has_admin(&env) {
+            return Err(ContractError::NotInitialized);
+        }
+        if !storage::is_supported_asset(&env, &asset) {
+            return Err(ContractError::UnsupportedAsset);
+        }
+        let ceiling = storage::read_buyer_exposure_ceiling(&env, &asset)
+            .ok_or(ContractError::ExposureCeilingNotConfigured)?;
+        let exposure = storage::read_buyer_exposure(&env, &buyer, &asset);
+        let headroom = ceiling.saturating_sub(exposure);
+        Ok(BuyerExposureHeadroom {
+            ceiling,
+            exposure,
+            headroom,
+        })
     }
 
     pub fn propose_admin(
@@ -553,6 +781,29 @@ impl UptoSessionContract {
         storage::read_admin_rotation(&env)
     }
 
+    pub fn get_admin_rotation_status(env: Env) -> Result<AdminRotationStatus, ContractError> {
+        if !storage::has_admin(&env) {
+            return Err(ContractError::NotInitialized);
+        }
+        match storage::read_admin_rotation(&env) {
+            None => Ok(AdminRotationStatus::NoProposal),
+            Some(rotation) => {
+                let current_ledger = env.ledger().sequence();
+                if current_ledger >= rotation.expires_at_ledger {
+                    Ok(AdminRotationStatus::Expired {
+                        pending_admin: rotation.pending_admin,
+                        expires_at_ledger: rotation.expires_at_ledger,
+                    })
+                } else {
+                    Ok(AdminRotationStatus::Active {
+                        pending_admin: rotation.pending_admin,
+                        expires_at_ledger: rotation.expires_at_ledger,
+                    })
+                }
+            }
+        }
+    }
+
     pub fn get_configuration(env: Env) -> Result<ContractConfiguration, ContractError> {
         let admin = storage::read_admin(&env).ok_or(ContractError::NotInitialized)?;
         Ok(ContractConfiguration {
@@ -578,6 +829,45 @@ impl UptoSessionContract {
             session_id_domain: ids::session_id_domain_hash(&env),
             usage_commitment_domain: ids::usage_commitment_domain_hash(&env),
         }
+    }
+
+    pub fn get_initialization_digest(env: Env) -> Result<BytesN<32>, ContractError> {
+        if !storage::has_admin(&env) {
+            return Err(ContractError::NotInitialized);
+        }
+        storage::read_initialization_configuration_digest(&env).ok_or(ContractError::NotInitialized)
+    }
+
+    pub fn get_session_state_counts(env: Env) -> Result<SessionStateCounts, ContractError> {
+        if !storage::has_admin(&env) {
+            return Err(ContractError::NotInitialized);
+        }
+        Ok(storage::read_session_state_counts(&env))
+    }
+
+    pub fn get_seller_session_counts(
+        env: Env,
+        seller: Address,
+    ) -> Result<SessionStateCounts, ContractError> {
+        if !storage::has_admin(&env) {
+            return Err(ContractError::NotInitialized);
+        }
+        Ok(storage::read_seller_session_state_counts(&env, &seller))
+    }
+
+    pub fn get_sessions_by_commitment(
+        env: Env,
+        kind: CommitmentKind,
+        commitment: BytesN<32>,
+    ) -> Result<Vec<BytesN<32>>, ContractError> {
+        if !storage::has_admin(&env) {
+            return Err(ContractError::NotInitialized);
+        }
+        Ok(storage::read_sessions_by_commitment(
+            &env,
+            &kind,
+            &commitment,
+        ))
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -712,6 +1002,7 @@ impl UptoSessionContract {
         let liability = storage::increase_liability(&env, &asset, max_amount)?;
         storage::increase_seller_exposure(&env, &seller, &asset, max_amount)?;
         storage::increment_buyer_open_sessions(&env, &buyer)?;
+        storage::increment_buyer_total_sessions(&env, &buyer)?;
         storage::increment_seller_open_sessions(&env, &seller)?;
         if escrow.balance(&contract) < liability {
             return Err(ContractError::EscrowUnderfunded);
@@ -747,7 +1038,13 @@ impl UptoSessionContract {
             usage_scheme_version: None,
         };
 
-        storage::write_session(&env, &session);
+        storage::write_session(&env, &session)?;
+        storage::index_session_commitment(
+            &env,
+            &CommitmentKind::Resource,
+            &session.resource_hash,
+            &session_id,
+        )?;
         storage::write_idempotency_key(&env, &buyer, &idempotency_key, &session_id);
         events::publish_session_created(&env, &session);
 
@@ -936,7 +1233,8 @@ impl UptoSessionContract {
         session.status = SessionStatus::Settled;
         session.finalized_ledger = Some(env.ledger().sequence());
         session.usage_scheme_version = Some(validation::SUPPORTED_USAGE_SCHEME_VERSION);
-        storage::write_session(&env, &session);
+        storage::write_session(&env, &session)?;
+        storage::index_session_commitment(&env, &CommitmentKind::Usage, &usage_hash, &session_id)?;
         events::publish_session_settled(
             &env,
             &session_id,
@@ -977,7 +1275,12 @@ impl UptoSessionContract {
             SessionStatus::Expired => SettlementRejectionReason::AlreadyExpired,
             SessionStatus::Rejected => SettlementRejectionReason::AlreadyRejected,
             SessionStatus::Open => {
-                if actual_amount <= 0 {
+                if validation::validate_commitment_scheme(
+                    session.resource_scheme_version,
+                    validation::SUPPORTED_RESOURCE_SCHEME_VERSION,
+                ).is_err() {
+                    SettlementRejectionReason::UnsupportedScheme
+                } else if actual_amount <= 0 {
                     SettlementRejectionReason::InvalidAmount
                 } else if actual_amount > session.max_amount {
                     SettlementRejectionReason::AmountExceedsCap
@@ -1009,6 +1312,61 @@ impl UptoSessionContract {
             actual_amount,
             seller_payout,
             buyer_refund,
+            is_expired,
+            rejection_reason,
+        }
+    }
+
+    pub fn preview_cancel(
+        env: Env,
+        session_id: BytesN<32>,
+    ) -> CancellationPreview {
+        let session = match storage::read_session(&env, &session_id) {
+            Some(s) => s,
+            None => {
+                return CancellationPreview {
+                    eligible: false,
+                    refundable_amount: 0,
+                    is_expired: false,
+                    rejection_reason: CancellationRejectionReason::NotFound,
+                };
+            }
+        };
+
+        let is_expired = env.ledger().sequence() >= session.expires_at_ledger;
+
+        let rejection_reason = match &session.status {
+            SessionStatus::Settled => CancellationRejectionReason::AlreadySettled,
+            SessionStatus::Cancelled => CancellationRejectionReason::AlreadyCancelled,
+            SessionStatus::Expired => CancellationRejectionReason::AlreadyExpired,
+            SessionStatus::Rejected => CancellationRejectionReason::AlreadyRejected,
+            SessionStatus::Open => {
+                if is_expired {
+                    CancellationRejectionReason::Expired
+                } else {
+                    let contract = env.current_contract_address();
+                    let asset = token::Client::new(&env, &session.asset);
+                    if session.escrowed_amount != session.max_amount
+                        || asset.balance(&contract) < storage::read_liability(&env, &session.asset)
+                    {
+                        CancellationRejectionReason::EscrowUnderfunded
+                    } else {
+                        CancellationRejectionReason::None
+                    }
+                }
+            }
+        };
+
+        let eligible = rejection_reason == CancellationRejectionReason::None;
+        let refundable_amount = if eligible {
+            session.escrowed_amount
+        } else {
+            0
+        };
+
+        CancellationPreview {
+            eligible,
+            refundable_amount,
             is_expired,
             rejection_reason,
         }
@@ -1065,74 +1423,10 @@ impl UptoSessionContract {
         session.escrowed_amount = 0;
         session.status = SessionStatus::Cancelled;
         session.finalized_ledger = Some(env.ledger().sequence());
-        storage::write_session(&env, &session);
+        storage::write_session(&env, &session)?;
         events::publish_session_cancelled(
             &env,
             &session_id,
-            &session.buyer,
-            &session.asset,
-            refunded_amount,
-        );
-
-        Ok(())
-    }
-
-    pub fn reject(env: Env, session_id: BytesN<32>) -> Result<(), ContractError> {
-        let mut session =
-            storage::read_session(&env, &session_id).ok_or(ContractError::SessionNotFound)?;
-
-        match &session.status {
-            SessionStatus::Open => {}
-            SessionStatus::Settled => return Err(ContractError::SessionAlreadySettled),
-            SessionStatus::Cancelled => return Err(ContractError::SessionCancelled),
-            SessionStatus::Expired => return Err(ContractError::SessionExpired),
-            SessionStatus::Rejected => return Err(ContractError::SessionRejected),
-        }
-
-        if env.ledger().sequence() >= session.expires_at_ledger {
-            return Err(ContractError::ExpiredSession);
-        }
-        session.seller.require_auth();
-        let refunded_amount = session.escrowed_amount;
-        let asset = token::Client::new(&env, &session.asset);
-        let contract = env.current_contract_address();
-        if refunded_amount != session.max_amount
-            || asset.balance(&contract) < storage::read_liability(&env, &session.asset)
-        {
-            return Err(ContractError::EscrowUnderfunded);
-        }
-        let buyer_exposure = storage::checked_buyer_exposure_decrease(
-            &env,
-            &session.buyer,
-            &session.asset,
-            refunded_amount,
-        )?;
-        let contract_balance_before = asset.balance(&contract);
-        let buyer_balance_before = asset.balance(&session.buyer);
-        storage::decrease_liability(&env, &session.asset, refunded_amount)?;
-        storage::decrease_seller_exposure(&env, &session.seller, &session.asset, refunded_amount)?;
-        storage::decrement_buyer_open_sessions(&env, &session.buyer)?;
-        storage::decrement_seller_open_sessions(&env, &session.seller)?;
-        storage::write_buyer_exposure(&env, &session.buyer, &session.asset, buyer_exposure);
-        asset.transfer(&contract, &session.buyer, &refunded_amount);
-        verify_debit(
-            contract_balance_before,
-            asset.balance(&contract),
-            refunded_amount,
-        )?;
-        verify_credit(
-            buyer_balance_before,
-            asset.balance(&session.buyer),
-            refunded_amount,
-        )?;
-        session.escrowed_amount = 0;
-        session.status = SessionStatus::Rejected;
-        session.finalized_ledger = Some(env.ledger().sequence());
-        storage::write_session(&env, &session);
-        events::publish_session_rejected(
-            &env,
-            &session_id,
-            &session.seller,
             &session.buyer,
             &session.asset,
             refunded_amount,
@@ -1160,7 +1454,6 @@ impl UptoSessionContract {
         if env.ledger().sequence() >= session.expires_at_ledger {
             return Err(ContractError::ExpiredSession);
         }
-
         if new_max_amount <= 0 || new_max_amount >= session.max_amount {
             return Err(ContractError::InvalidCapReduction);
         }
@@ -1183,10 +1476,8 @@ impl UptoSessionContract {
             &session.asset,
             refund_difference,
         )?;
-
         let contract_balance_before = asset.balance(&contract);
         let buyer_balance_before = asset.balance(&session.buyer);
-
         storage::decrease_liability(&env, &session.asset, refund_difference)?;
         storage::decrease_seller_exposure(
             &env,
@@ -1210,7 +1501,7 @@ impl UptoSessionContract {
 
         session.max_amount = new_max_amount;
         session.escrowed_amount = new_max_amount;
-        storage::write_session(&env, &session);
+        storage::write_session(&env, &session)?;
 
         events::publish_session_cap_reduced(
             &env,
@@ -1222,6 +1513,71 @@ impl UptoSessionContract {
             refund_difference,
         );
 
+        Ok(())
+    }
+
+    pub fn reject(env: Env, session_id: BytesN<32>) -> Result<(), ContractError> {
+        let mut session =
+            storage::read_session(&env, &session_id).ok_or(ContractError::SessionNotFound)?;
+
+        match &session.status {
+            SessionStatus::Open => {}
+            SessionStatus::Settled => return Err(ContractError::SessionAlreadySettled),
+            SessionStatus::Cancelled => return Err(ContractError::SessionCancelled),
+            SessionStatus::Expired => return Err(ContractError::SessionExpired),
+            SessionStatus::Rejected => return Err(ContractError::SessionRejected),
+        }
+        if env.ledger().sequence() >= session.expires_at_ledger {
+            return Err(ContractError::ExpiredSession);
+        }
+
+        session.seller.require_auth();
+        let refunded_amount = session.escrowed_amount;
+        let asset = token::Client::new(&env, &session.asset);
+        let contract = env.current_contract_address();
+        if refunded_amount != session.max_amount
+            || asset.balance(&contract) < storage::read_liability(&env, &session.asset)
+        {
+            return Err(ContractError::EscrowUnderfunded);
+        }
+
+        let buyer_exposure = storage::checked_buyer_exposure_decrease(
+            &env,
+            &session.buyer,
+            &session.asset,
+            refunded_amount,
+        )?;
+        let contract_balance_before = asset.balance(&contract);
+        let buyer_balance_before = asset.balance(&session.buyer);
+        storage::decrease_liability(&env, &session.asset, refunded_amount)?;
+        storage::decrease_seller_exposure(&env, &session.seller, &session.asset, refunded_amount)?;
+        storage::decrement_buyer_open_sessions(&env, &session.buyer)?;
+        storage::decrement_seller_open_sessions(&env, &session.seller)?;
+        storage::write_buyer_exposure(&env, &session.buyer, &session.asset, buyer_exposure);
+        asset.transfer(&contract, &session.buyer, &refunded_amount);
+        verify_debit(
+            contract_balance_before,
+            asset.balance(&contract),
+            refunded_amount,
+        )?;
+        verify_credit(
+            buyer_balance_before,
+            asset.balance(&session.buyer),
+            refunded_amount,
+        )?;
+
+        session.escrowed_amount = 0;
+        session.status = SessionStatus::Rejected;
+        session.finalized_ledger = Some(env.ledger().sequence());
+        storage::write_session(&env, &session)?;
+        events::publish_session_rejected(
+            &env,
+            &session_id,
+            &session.seller,
+            &session.buyer,
+            &session.asset,
+            refunded_amount,
+        );
         Ok(())
     }
 
@@ -1291,6 +1647,62 @@ impl UptoSessionContract {
                             | ContractError::BuyerExposureUnderflow,
                         ) => BatchRecoveryStatus::EscrowUnavailable,
                         Err(error) => return Err(error),
+                    }
+                }
+            };
+            results.push_back(batch_result(session_id, status, 0));
+        }
+
+        Ok(results)
+    }
+
+    pub fn preview_recover_expired_batch(
+        env: Env,
+        session_ids: Vec<BytesN<32>>,
+    ) -> Result<Vec<BatchRecoveryResult>, ContractError> {
+        if session_ids.is_empty() || session_ids.len() > MAX_RECOVERY_BATCH_SIZE {
+            return Err(ContractError::InvalidBatchSize);
+        }
+
+        let mut seen = Vec::new(&env);
+        let mut results = Vec::new(&env);
+        let current_ledger = env.ledger().sequence();
+        let contract = env.current_contract_address();
+
+        for session_id in session_ids.iter() {
+            if seen.iter().any(|seen_id| seen_id == session_id) {
+                results.push_back(batch_result(session_id, BatchRecoveryStatus::Duplicate, 0));
+                continue;
+            }
+            seen.push_back(session_id.clone());
+
+            let Some(session) = storage::read_session(&env, &session_id) else {
+                results.push_back(batch_result(session_id, BatchRecoveryStatus::NotFound, 0));
+                continue;
+            };
+
+            let status = match session.status {
+                SessionStatus::Settled => BatchRecoveryStatus::AlreadySettled,
+                SessionStatus::Cancelled => BatchRecoveryStatus::AlreadyCancelled,
+                SessionStatus::Expired => BatchRecoveryStatus::AlreadyRecovered,
+                SessionStatus::Rejected => BatchRecoveryStatus::AlreadyRejected,
+                SessionStatus::Open if current_ledger < session.expires_at_ledger => {
+                    BatchRecoveryStatus::NotExpired
+                }
+                SessionStatus::Open => {
+                    let refunded_amount = session.escrowed_amount;
+                    let asset = token::Client::new(&env, &session.asset);
+                    if refunded_amount != session.max_amount
+                        || asset.balance(&contract) < storage::read_liability(&env, &session.asset)
+                    {
+                        BatchRecoveryStatus::EscrowUnavailable
+                    } else {
+                        results.push_back(batch_result(
+                            session_id,
+                            BatchRecoveryStatus::Recovered,
+                            refunded_amount,
+                        ));
+                        continue;
                     }
                 }
             };
@@ -1396,6 +1808,53 @@ impl UptoSessionContract {
         storage::read_session(&env, &session_id).ok_or(ContractError::SessionNotFound)
     }
 
+    pub fn get_immutable_session_terms_digest(
+        env: Env,
+        session_id: BytesN<32>,
+    ) -> Result<BytesN<32>, ContractError> {
+        let session = storage::read_session(&env, &session_id)
+            .ok_or(ContractError::SessionNotFound)?;
+        Ok(ids::immutable_session_terms_digest(
+            &env,
+            &session.id,
+            &session.buyer,
+            &session.seller,
+            &session.asset,
+            session.max_amount,
+            session.creation_ledger,
+            &session.resource_hash,
+            session.resource_scheme_version,
+        ))
+    }
+
+    pub fn get_terminal_evidence(
+        env: Env,
+        session_id: BytesN<32>,
+    ) -> Result<TerminalEvidence, ContractError> {
+        let session =
+            storage::read_session(&env, &session_id).ok_or(ContractError::SessionNotFound)?;
+        if session.status == SessionStatus::Open {
+            return Ok(TerminalEvidence::Nonterminal);
+        }
+        let finalized_ledger = session
+            .finalized_ledger
+            .ok_or(ContractError::InvalidStateTransition)?;
+        let digest = ids::terminal_evidence_digest(
+            &env,
+            &session.id,
+            &session.status,
+            finalized_ledger,
+            &session.usage_hash,
+        );
+        Ok(TerminalEvidence::Terminal(TerminalEvidenceDigest {
+            evidence_version: TERMINAL_EVIDENCE_VERSION,
+            status: session.status,
+            finalized_ledger,
+            usage_hash: session.usage_hash,
+            digest,
+        }))
+    }
+
     pub fn get_session_batch(
         env: Env,
         session_ids: Vec<BytesN<32>>,
@@ -1452,7 +1911,7 @@ impl UptoSessionContract {
 
         let previous_expires_at_ledger = session.expires_at_ledger;
         session.expires_at_ledger = new_expires_at_ledger;
-        storage::write_session(&env, &session);
+        storage::write_session(&env, &session)?;
 
         events::publish_session_expiry_extended(
             &env,
@@ -1570,7 +2029,7 @@ fn recover_open_session(env: &Env, session: &mut Session) -> Result<(), Contract
     session.escrowed_amount = 0;
     session.status = SessionStatus::Expired;
     session.finalized_ledger = Some(env.ledger().sequence());
-    storage::write_session(env, session);
+    storage::write_session(env, session)?;
     events::publish_session_recovered(env, session, refunded_amount);
     Ok(())
 }

@@ -4,26 +4,57 @@
 
 ### Added
 
-- Generate a deterministic TypeScript API reference in `bindings/upto-session/README.md` from
-  the frozen contract specification (`artifacts/spec/upto-session.json`) and compatibility
-  fixtures (`artifacts/interface/upto-session-v3.json`, `artifacts/interface/upto-session-v2.json`)
-  covering all public methods, types, errors, events, authorization boundaries, and lifecycle guidance.
-  Compatibility: documentation and binding generation check only; runtime contract interface is unchanged.
+- Add read-only deployment account and network preflight command (`scripts/testnet/preflight-testnet.mjs`) reporting configuration, network, funding, and artifact readiness before build or deployment.
+  Compatibility: additive deployment tooling; deployed contracts unchanged.
   Migration: none.
 
-- Add cross-version behavioral differential traces (`artifacts/interface/cross-version-behavior-traces.json`,
-  `scripts/local/cross-version-traces.mjs`, and `formal/escrow-model`) that replay shared v2 and v3
-  operations with explicit expected-difference fixtures and fail closed on unapproved state, balance,
-  error, event, or cross-deployment identifier differences.
-  Compatibility: test and verification fixtures only; existing v2 and v3 deployment routes are unchanged.
-  Migration: [v2-to-v3 replacement routing](artifacts/interface/migrations/v2-to-v3.json).
+- Snapshot exact root and nested authorization trees for all public mutations in `artifacts/interface/authorization-trees.json` with test coverage asserting unauthorized calls produce zero state change.
+  Compatibility: test fixtures only; contract interfaces unchanged.
+  Migration: none.
 
-- Add bounded per-asset payment and daily spending ceilings (`AssetSpendingLimit`, `asset_limits`,
-  and `spent_today_asset`) to `policy-wallet-example`, requiring an explicit ceiling for every
-  allowed asset and isolating daily spend counters per asset without cross-asset conversion.
-  Compatibility: `SpendingPolicy` in `policy-wallet-example` now requires `asset_limits` matching
-  `allowed_assets` and exposes `spent_today_asset(agent, asset)`.
-  Migration: include an `AssetSpendingLimit` entry in `asset_limits` for each asset in `allowed_assets`.
+- Add panic-free regression test harness exercising every Result-returning public entrypoint with boundary, malformed, and wrong-state inputs.
+  Compatibility: test suites and security documentation only.
+  Migration: none.
+
+- Forbid unwrap and expect calls in production contract modules via clippy deny lints and repository source gate (`scripts/check-no-production-unwrap.mjs`).
+  Compatibility: internal implementation refactoring; contract interfaces unchanged.
+- Add deterministic cursor pagination `get_agent_policies` and per-agent policy index to
+  `policy-wallet-example` with bounded page sizes and strict agent isolation.
+  Compatibility: additive read-only query; existing policy evaluation is unchanged.
+  Migration: none.
+
+- Add versioned, domain-separated `get_policy_configuration_digest` query to `policy-wallet-example`
+  fingerprinting wallet owner, agent, limits, validity windows, and allowlists.
+  Compatibility: additive read-only query; existing policy evaluation is unchanged.
+  Migration: none.
+
+- Add bounded, read-only `preview_recover_expired_batch` query to `upto-session` with
+  per-session recoverability and refund metadata matching batch recovery behavior.
+  Compatibility: additive read-only query; existing recovery execution is unchanged.
+  Migration: none.
+
+- Add policy active-window status query (`get_policy_status`) in `policy-wallet-example`
+  reporting whether a policy is pending, active, expired, or revoked at the current ledger
+  sequence, with the active ledger window and next transition boundary.
+  Compatibility: additive method and return types (`PolicyStatus`, `PolicyActiveWindowStatus`);
+  existing authorization semantics are unchanged.
+  Migration: none.
+
+- Add pending administrator rotation status query (#243).
+  Compatibility: additive method and result type; existing admin and admin rotation queries are unchanged.
+  Migration: none.
+
+- Add seller exposure headroom query (#242).
+  Compatibility: additive method and result type; existing seller exposure ceiling and exposure queries are unchanged.
+  Migration: none.
+
+- Add buyer exposure headroom query (#241).
+  Compatibility: additive method and result type; existing buyer exposure ceiling and exposure queries are unchanged.
+  Migration: none.
+
+- Add asset exposure headroom query (#240).
+  Compatibility: additive method and result type; existing exposure ceiling and liability queries are unchanged.
+  Migration: none.
 
 - Add typed transaction evidence helpers to the TypeScript binding
   (`createSessionWithEvidence`, `settleWithEvidence`, `cancelWithEvidence`,
@@ -71,6 +102,14 @@
   Migration: [v2-to-v3 replacement routing](artifacts/interface/migrations/v2-to-v3.json).
 
 ### Fixed
+
+- Decrement per-buyer active exposure in `reduce_session_cap` alongside escrow liability and
+  per-seller exposure, and return `ContractError::SessionNotFound` when querying
+  `get_terminal_evidence` for an unknown session.
+  Compatibility: Preserve the public contract ABI, storage layout, and error variants; callers
+  reading `get_buyer_exposure` or handling missing sessions now observe consistent state and
+  `SessionNotFound` (`#5`).
+  Migration: No contract reinitialization or state migration is required.
 
 - Bind `idempotencyKey` in the TypeScript `deriveSessionId` helper so it matches the
   contract's v3 session ID preimage. Compatibility: `SessionIdInputV3` now requires

@@ -696,30 +696,6 @@
       "fields": [
         {
           "doc": "",
-          "name": "asset",
-          "type": "address"
-        },
-        {
-          "doc": "",
-          "name": "max_amount_per_day",
-          "type": "i128"
-        },
-        {
-          "doc": "",
-          "name": "max_amount_per_payment",
-          "type": "i128"
-        }
-      ],
-      "lib": "",
-      "name": "AssetSpendingLimit"
-    }
-  },
-  {
-    "udt_struct_v0": {
-      "doc": "",
-      "fields": [
-        {
-          "doc": "",
           "name": "expires_at_ledger",
           "type": "u32"
         },

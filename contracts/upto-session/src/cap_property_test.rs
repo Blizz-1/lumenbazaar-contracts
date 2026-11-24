@@ -143,7 +143,8 @@ fn run_settlements(cap: i128, amounts: &[i128]) {
         &cap,
         &EXPIRES_AT,
         &BytesN::from_array(&env, &[31; 32]),
-        &next_idempotency_key(&env),
+        &BytesN::from_array(&env, &[30; 32]),
+        &unique_idempotency_key(&env),
     );
     let usage_hash = BytesN::from_array(&env, &[32; 32]);
     let mut finalized = false;
@@ -279,7 +280,8 @@ proptest! {
             &amount,
             &EXPIRES_AT,
             &BytesN::from_array(&env, &[33; 32]),
-            &next_idempotency_key(&env),
+            &BytesN::from_array(&env, &[34; 32]),
+            &unique_idempotency_key(&env),
         );
         let events = contract_event_count(&env, &contract_id);
 
@@ -321,15 +323,19 @@ proptest! {
         client.initialize(&admin, &soroban_sdk::vec![&env, asset_policy(&asset, initial)]);
 
         let result = client.try_set_asset_max_session_amount(&asset, &update);
-        if update > 0 && update <= initial {
-            prop_assert!(result.is_ok());
-            prop_assert_eq!(client.get_asset_max_session_amount(&asset), update);
-        } else if update > initial {
-            prop_assert_eq!(result.map(|_| ()), Err(Ok(ContractError::CapIncreasePending)));
-            prop_assert_eq!(client.get_asset_max_session_amount(&asset), initial);
-        } else {
+        if update <= 0 {
             prop_assert_eq!(result.map(|_| ()), Err(Ok(ContractError::InvalidAssetCap)));
             prop_assert_eq!(client.get_asset_max_session_amount(&asset), initial);
+        } else if update > initial {
+            prop_assert_eq!(result.map(|_| ()), Err(Ok(ContractError::CapIncreasePending)));
+            prop_assert_eq!(
+                result.map(|_| ()),
+                Err(Ok(ContractError::CapIncreasePending))
+            );
+            prop_assert_eq!(client.get_asset_max_session_amount(&asset), initial);
+        } else {
+            prop_assert!(result.is_ok());
+            prop_assert_eq!(client.get_asset_max_session_amount(&asset), update);
         }
     }
 }
@@ -413,7 +419,8 @@ fn overflow_adjacent_escrow_totals_fail_without_state_change() {
         &(i128::MAX - 5),
         &EXPIRES_AT,
         &hash,
-        &next_idempotency_key(&env),
+        &BytesN::from_array(&env, &[35; 32]),
+        &unique_idempotency_key(&env),
     );
     // Exactly reaching i128::MAX of aggregate liability is still valid.
     client.create_session(
@@ -423,7 +430,8 @@ fn overflow_adjacent_escrow_totals_fail_without_state_change() {
         &5,
         &EXPIRES_AT,
         &hash,
-        &next_idempotency_key(&env),
+        &BytesN::from_array(&env, &[36; 32]),
+        &unique_idempotency_key(&env),
     );
     assert_eq!(client.get_escrow_liability(&asset), i128::MAX);
     assert_eq!(token.balance(&contract_id), i128::MAX);
@@ -436,7 +444,8 @@ fn overflow_adjacent_escrow_totals_fail_without_state_change() {
         &1,
         &EXPIRES_AT,
         &hash,
-        &next_idempotency_key(&env),
+        &BytesN::from_array(&env, &[37; 32]),
+        &unique_idempotency_key(&env),
     );
     assert!(result.is_err());
     assert_eq!(client.get_escrow_liability(&asset), i128::MAX);

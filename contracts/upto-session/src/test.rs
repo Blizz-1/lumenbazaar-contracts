@@ -28,6 +28,10 @@ mod storage_lifecycle_harness {
     include!("storage_lifecycle_test.rs");
 }
 
+mod panic_free_regression_harness {
+    include!("panic_free_test.rs");
+}
+
 // Global auth mocks in the legacy tests below isolate validation, state,
 // event, and resource-accounting behavior. They are not authorization
 // evidence. Release-gating authorization paths belong in
@@ -95,6 +99,14 @@ fn asset_policy(asset: &Address, max_session_amount: i128) -> AssetPolicy {
         max_asset_exposure: i128::MAX,
         max_buyer_exposure: i128::MAX,
     }
+}
+
+fn next_idempotency_key(env: &Env) -> BytesN<32> {
+    static NEXT: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(1);
+    let n = NEXT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+    let mut bytes = [0u8; 32];
+    bytes[..8].copy_from_slice(&n.to_be_bytes());
+    BytesN::from_array(env, &bytes)
 }
 
 fn create_adversarial_token(env: &Env, buyer: &Address, amount: i128) -> Address {
@@ -640,6 +652,7 @@ fn public_interface_is_callable() {
                 resource_hash: &resource_hash,
                 idempotency_key: &idempotency_key,
                 sequence: 0,
+                idempotency_key: &idempotency_key,
             },
         )
     });
@@ -1537,7 +1550,7 @@ fn create_rejects_uninitialized_unsupported_and_excessive_duration() {
             &500,
             &50,
             &resource_hash,
-            &next_idempotency_key(&env)
+            &next_idempotency_key(&env),
         ),
         Err(Ok(ContractError::NotInitialized))
     );
@@ -1553,7 +1566,7 @@ fn create_rejects_uninitialized_unsupported_and_excessive_duration() {
             &500,
             &50,
             &resource_hash,
-            &next_idempotency_key(&env)
+            &next_idempotency_key(&env),
         ),
         Err(Ok(ContractError::UnsupportedAsset))
     );
@@ -1565,7 +1578,7 @@ fn create_rejects_uninitialized_unsupported_and_excessive_duration() {
             &500,
             &(validation::MAX_SESSION_DURATION_LEDGERS + 1),
             &resource_hash,
-            &next_idempotency_key(&env)
+            &next_idempotency_key(&env),
         ),
         Err(Ok(ContractError::SessionDurationTooLong))
     );
@@ -2308,7 +2321,7 @@ fn settle_requires_seller_auth() {
     let usage_hash = BytesN::from_array(&env, &[9; 32]);
 
     env.as_contract(&contract_id, || {
-        storage::write_session(
+        let _ = storage::write_session(
             &env,
             &Session {
                 id: session_id.clone(),
@@ -2347,7 +2360,7 @@ fn settle_rejects_wrong_seller_auth() {
     let usage_hash = BytesN::from_array(&env, &[38; 32]);
 
     env.as_contract(&contract_id, || {
-        storage::write_session(
+        let _ = storage::write_session(
             &env,
             &Session {
                 id: session_id.clone(),
@@ -2404,7 +2417,7 @@ fn settle_rejects_finalized_sessions() {
     let cancelled_id = BytesN::from_array(&env, &[11; 32]);
 
     env.as_contract(&contract_id, || {
-        storage::write_session(
+        let _ = storage::write_session(
             &env,
             &Session {
                 id: settled_id.clone(),
@@ -2424,7 +2437,7 @@ fn settle_rejects_finalized_sessions() {
                 usage_scheme_version: Some(1),
             },
         );
-        storage::write_session(
+        let _ = storage::write_session(
             &env,
             &Session {
                 id: cancelled_id.clone(),
@@ -3647,7 +3660,7 @@ fn cancel_requires_buyer_auth() {
     let resource_hash = BytesN::from_array(&env, &[2; 32]);
 
     env.as_contract(&contract_id, || {
-        storage::write_session(
+        let _ = storage::write_session(
             &env,
             &Session {
                 id: session_id.clone(),
@@ -3699,7 +3712,7 @@ fn cancel_rejects_already_settled_session() {
     let usage_hash = BytesN::from_array(&env, &[21; 32]);
 
     env.as_contract(&contract_id, || {
-        storage::write_session(
+        let _ = storage::write_session(
             &env,
             &Session {
                 id: session_id.clone(),
@@ -3740,7 +3753,7 @@ fn cancel_rejects_already_cancelled_session() {
     let resource_hash = BytesN::from_array(&env, &[23; 32]);
 
     env.as_contract(&contract_id, || {
-        storage::write_session(
+        let _ = storage::write_session(
             &env,
             &Session {
                 id: session_id.clone(),
@@ -3877,7 +3890,7 @@ fn reject_requires_seller_auth() {
     let resource_hash = BytesN::from_array(&env, &[83; 32]);
 
     env.as_contract(&contract_id, || {
-        storage::write_session(
+        let _ = storage::write_session(
             &env,
             &Session {
                 id: session_id.clone(),
@@ -4223,7 +4236,7 @@ fn preview_settle_detects_undercollateralized_escrow() {
     let session_id = BytesN::from_array(&env, &[93; 32]);
 
     env.as_contract(&contract_id, || {
-        storage::write_session(
+        let _ = storage::write_session(
             &env,
             &Session {
                 id: session_id.clone(),
@@ -4291,7 +4304,7 @@ fn extend_ttl_rejects_cancelled_sessions() {
     let resource_hash = BytesN::from_array(&env, &[27; 32]);
 
     env.as_contract(&contract_id, || {
-        storage::write_session(
+        let _ = storage::write_session(
             &env,
             &Session {
                 id: session_id.clone(),
@@ -4332,7 +4345,7 @@ fn extend_ttl_rejects_settled_sessions() {
     let usage_hash = BytesN::from_array(&env, &[30; 32]);
 
     env.as_contract(&contract_id, || {
-        storage::write_session(
+        let _ = storage::write_session(
             &env,
             &Session {
                 id: session_id.clone(),
@@ -4469,6 +4482,112 @@ fn recoverability_query_matches_recover_expired_boundary_and_terminal_states() {
     let rej = client.get_recoverability(&rejected);
     assert_eq!(rej.status, RecoverabilityStatus::AlreadyRejected);
     assert_eq!(rej.refundable_amount, 0);
+}
+
+#[test]
+fn solvency_query_reports_ordered_mixed_health_with_defined_edge_cases() {
+    let env = Env::default();
+    env.mock_all_auths_allowing_non_root_auth();
+    let contract_id = env.register(UptoSessionContract, ());
+    let client = UptoSessionContractClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let buyer = Address::generate(&env);
+    let seller = Address::generate(&env);
+    let healthy = create_test_asset(&env, &buyer, 300);
+    let surplus = create_test_asset(&env, &buyer, 300);
+    let underfunded = create_test_asset(&env, &buyer, 300);
+    let deprecated = create_test_asset(&env, &buyer, 300);
+    let unknown = Address::generate(&env);
+
+    assert_eq!(
+        client.try_get_solvency(&soroban_sdk::vec![&env, healthy.clone()]),
+        Err(Ok(ContractError::NotInitialized))
+    );
+    client.initialize(
+        &admin,
+        &soroban_sdk::vec![
+            &env,
+            asset_policy(&healthy, 300),
+            asset_policy(&surplus, 300),
+            asset_policy(&underfunded, 300),
+            asset_policy(&deprecated, 300)
+        ],
+    );
+    let hash = BytesN::from_array(&env, &[97; 32]);
+    let key = BytesN::from_array(&env, &[98; 32]);
+    client.create_session(
+        &buyer,
+        &seller,
+        &healthy,
+        &100,
+        &50,
+        &hash,
+        &next_idempotency_key(&env),
+    );
+    client.create_session(
+        &buyer,
+        &seller,
+        &surplus,
+        &100,
+        &50,
+        &hash,
+        &next_idempotency_key(&env),
+    );
+    client.create_session(&buyer, &seller, &underfunded, &100, &50, &hash, &key);
+    token::StellarAssetClient::new(&env, &surplus).mint(&contract_id, &40);
+    env.as_contract(&contract_id, || {
+        storage::increase_liability(&env, &underfunded, 25).unwrap();
+    });
+    client.deprecate_asset(&deprecated, &BytesN::from_array(&env, &[9; 32]));
+
+    let query = soroban_sdk::vec![
+        &env,
+        underfunded.clone(),
+        unknown.clone(),
+        healthy.clone(),
+        deprecated.clone(),
+        surplus.clone(),
+        healthy.clone()
+    ];
+    let results = client.get_solvency(&query);
+    assert_eq!(results.len(), 6);
+    let expected = [
+        (&underfunded, SolvencyAssetState::Active, 100, 125, -25),
+        (&unknown, SolvencyAssetState::Unknown, 0, 0, 0),
+        (&healthy, SolvencyAssetState::Active, 100, 100, 0),
+        (&deprecated, SolvencyAssetState::Deprecated, 0, 0, 0),
+        (&surplus, SolvencyAssetState::Active, 140, 100, 40),
+        (&healthy, SolvencyAssetState::Active, 100, 100, 0),
+    ];
+    for (index, (asset, state, balance, liability, delta)) in expected.iter().enumerate() {
+        let item = results.get(index as u32).unwrap();
+        assert_eq!(&item.asset, *asset);
+        assert_eq!(&item.state, state);
+        assert_eq!(item.balance, *balance);
+        assert_eq!(item.liability, *liability);
+        assert_eq!(item.surplus, *delta);
+    }
+
+    assert_eq!(
+        client.try_get_solvency(&soroban_sdk::Vec::new(&env)),
+        Err(Ok(ContractError::InvalidBatchSize))
+    );
+    let mut oversized = soroban_sdk::Vec::new(&env);
+    for _ in 0..=MAX_SOLVENCY_QUERY_ASSETS {
+        oversized.push_back(healthy.clone());
+    }
+    assert_eq!(
+        client.try_get_solvency(&oversized),
+        Err(Ok(ContractError::InvalidBatchSize))
+    );
+    let mut at_limit = soroban_sdk::Vec::new(&env);
+    for _ in 0..MAX_SOLVENCY_QUERY_ASSETS {
+        at_limit.push_back(healthy.clone());
+    }
+    assert_eq!(
+        client.get_solvency(&at_limit).len(),
+        MAX_SOLVENCY_QUERY_ASSETS
+    );
 }
 
 #[test]
@@ -5067,99 +5186,6 @@ fn creation_pause_requires_admin_and_fails_closed_before_transfer() {
 fn solvency_query_reports_ordered_mixed_health_with_defined_edge_cases() {
     let env = Env::default();
     env.mock_all_auths_allowing_non_root_auth();
-    let contract_id = env.register(UptoSessionContract, ());
-    let client = UptoSessionContractClient::new(&env, &contract_id);
-    let admin = Address::generate(&env);
-    let buyer = Address::generate(&env);
-    let seller = Address::generate(&env);
-    let healthy = create_test_asset(&env, &buyer, 300);
-    let surplus = create_test_asset(&env, &buyer, 300);
-    let underfunded = create_test_asset(&env, &buyer, 300);
-    let deprecated = create_test_asset(&env, &buyer, 300);
-    let unknown = Address::generate(&env);
-
-    assert_eq!(
-        client.try_get_solvency(&soroban_sdk::vec![&env, healthy.clone()]),
-        Err(Ok(ContractError::NotInitialized))
-    );
-    client.initialize(
-        &admin,
-        &soroban_sdk::vec![
-            &env,
-            asset_policy(&healthy, 300),
-            asset_policy(&surplus, 300),
-            asset_policy(&underfunded, 300),
-            asset_policy(&deprecated, 300)
-        ],
-    );
-    let hash = BytesN::from_array(&env, &[97; 32]);
-    let key = |n: u8| BytesN::from_array(&env, &[n; 32]);
-    client.create_session(&buyer, &seller, &healthy, &100, &50, &hash, &key(1));
-    client.create_session(&buyer, &seller, &surplus, &100, &50, &hash, &key(2));
-    client.create_session(&buyer, &seller, &underfunded, &100, &50, &hash, &key(3));
-    // Surplus: unsolicited transfer into escrow custody.
-    token::StellarAssetClient::new(&env, &surplus).mint(&contract_id, &40);
-    // Underfunded: raise recorded liability above custody.
-    env.as_contract(&contract_id, || {
-        storage::increase_liability(&env, &underfunded, 25).unwrap();
-    });
-    client.deprecate_asset(&deprecated, &key(4));
-
-    let query = soroban_sdk::vec![
-        &env,
-        underfunded.clone(),
-        unknown.clone(),
-        healthy.clone(),
-        deprecated.clone(),
-        surplus.clone(),
-        healthy.clone()
-    ];
-    let results = client.get_solvency(&query);
-    assert_eq!(results.len(), 6);
-    let expected = [
-        (&underfunded, SolvencyAssetState::Active, 100, 125, -25),
-        (&unknown, SolvencyAssetState::Unknown, 0, 0, 0),
-        (&healthy, SolvencyAssetState::Active, 100, 100, 0),
-        (&deprecated, SolvencyAssetState::Deprecated, 0, 0, 0),
-        (&surplus, SolvencyAssetState::Active, 140, 100, 40),
-        (&healthy, SolvencyAssetState::Active, 100, 100, 0),
-    ];
-    for (index, (asset, state, balance, liability, delta)) in expected.iter().enumerate() {
-        let item = results.get(index as u32).unwrap();
-        assert_eq!(&item.asset, *asset);
-        assert_eq!(&item.state, state);
-        assert_eq!(item.balance, *balance);
-        assert_eq!(item.liability, *liability);
-        assert_eq!(item.surplus, *delta);
-    }
-
-    // Strict bounds.
-    assert_eq!(
-        client.try_get_solvency(&soroban_sdk::Vec::new(&env)),
-        Err(Ok(ContractError::InvalidBatchSize))
-    );
-    let mut oversized = soroban_sdk::Vec::new(&env);
-    for _ in 0..=MAX_SOLVENCY_QUERY_ASSETS {
-        oversized.push_back(healthy.clone());
-    }
-    assert_eq!(
-        client.try_get_solvency(&oversized),
-        Err(Ok(ContractError::InvalidBatchSize))
-    );
-    let mut at_limit = soroban_sdk::Vec::new(&env);
-    for _ in 0..MAX_SOLVENCY_QUERY_ASSETS {
-        at_limit.push_back(healthy.clone());
-    }
-    assert_eq!(
-        client.get_solvency(&at_limit).len(),
-        MAX_SOLVENCY_QUERY_ASSETS
-    );
-}
-
-#[test]
-fn creation_pause_rejects_repeated_calls_and_resume_restores_creation() {
-    let env = Env::default();
-    env.mock_all_auths();
     let contract_id = env.register(UptoSessionContract, ());
     let client = UptoSessionContractClient::new(&env, &contract_id);
     let admin = Address::generate(&env);
