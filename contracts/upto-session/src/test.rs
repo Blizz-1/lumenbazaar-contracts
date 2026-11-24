@@ -2340,7 +2340,8 @@ fn settle_requires_seller_auth() {
                 resource_scheme_version: 1,
                 usage_scheme_version: None,
             },
-        );
+        )
+        .unwrap();
     });
 
     assert!(client.try_settle(&session_id, &10, &usage_hash).is_err());
@@ -2379,7 +2380,8 @@ fn settle_rejects_wrong_seller_auth() {
                 resource_scheme_version: 1,
                 usage_scheme_version: None,
             },
-        );
+        )
+        .unwrap();
     });
 
     let result = client
@@ -2456,7 +2458,8 @@ fn settle_rejects_finalized_sessions() {
                 resource_scheme_version: 1,
                 usage_scheme_version: None,
             },
-        );
+        )
+        .unwrap();
     });
 
     assert_eq!(
@@ -3679,7 +3682,8 @@ fn cancel_requires_buyer_auth() {
                 resource_scheme_version: 1,
                 usage_scheme_version: None,
             },
-        );
+        )
+        .unwrap();
     });
 
     assert!(client.try_cancel(&session_id).is_err());
@@ -3731,7 +3735,8 @@ fn cancel_rejects_already_settled_session() {
                 resource_scheme_version: 1,
                 usage_scheme_version: Some(1),
             },
-        );
+        )
+        .unwrap();
     });
 
     assert_eq!(
@@ -3772,7 +3777,8 @@ fn cancel_rejects_already_cancelled_session() {
                 resource_scheme_version: 1,
                 usage_scheme_version: None,
             },
-        );
+        )
+        .unwrap();
     });
 
     assert_eq!(
@@ -3909,7 +3915,8 @@ fn reject_requires_seller_auth() {
                 resource_scheme_version: 1,
                 usage_scheme_version: None,
             },
-        );
+        )
+        .unwrap();
     });
 
     assert!(client.try_reject(&session_id).is_err());
@@ -4255,7 +4262,8 @@ fn preview_settle_detects_undercollateralized_escrow() {
                 resource_scheme_version: 1,
                 usage_scheme_version: None,
             },
-        );
+        )
+        .unwrap();
     });
 
     let preview = client.preview_settle(&session_id, &50);
@@ -4323,7 +4331,8 @@ fn extend_ttl_rejects_cancelled_sessions() {
                 resource_scheme_version: 1,
                 usage_scheme_version: None,
             },
-        );
+        )
+        .unwrap();
     });
 
     assert_eq!(
@@ -4364,7 +4373,8 @@ fn extend_ttl_rejects_settled_sessions() {
                 resource_scheme_version: 1,
                 usage_scheme_version: Some(1),
             },
-        );
+        )
+        .unwrap();
     });
 
     assert_eq!(
@@ -5047,11 +5057,12 @@ fn reduce_session_cap_lowers_cap_refunds_buyer_and_reduces_liability() {
     assert_eq!(err_zero, Err(Ok(ContractError::InvalidCapReduction)));
 
     // Valid reduction from 1,000 to 600
-    // Refunds 400 to buyer, reduces liability and seller exposure to 600
+    // Refunds 400 to buyer, reduces liability, seller exposure, and buyer exposure to 600
     client.reduce_session_cap(&session_id, &600);
     assert_eq!(token.balance(&buyer), 9_400);
     assert_eq!(client.get_escrow_liability(&asset), 600);
     assert_eq!(client.get_seller_exposure(&seller, &asset), 600);
+    assert_eq!(client.get_buyer_exposure(&buyer, &asset), 600);
 
     let session = client.get_session(&session_id);
     assert_eq!(session.max_amount, 600);
@@ -5065,6 +5076,7 @@ fn reduce_session_cap_lowers_cap_refunds_buyer_and_reduces_liability() {
     assert_eq!(token.balance(&buyer), 9_600);
     assert_eq!(client.get_escrow_liability(&asset), 400);
     assert_eq!(client.get_seller_exposure(&seller, &asset), 400);
+    assert_eq!(client.get_buyer_exposure(&buyer, &asset), 400);
 
     // Settle with actual amount 350 <= 400
     client.settle(&session_id, &350, &usage_hash);
@@ -5072,6 +5084,7 @@ fn reduce_session_cap_lowers_cap_refunds_buyer_and_reduces_liability() {
     assert_eq!(token.balance(&buyer), 9_650); // 9,600 + 50 refund
     assert_eq!(client.get_escrow_liability(&asset), 0);
     assert_eq!(client.get_seller_exposure(&seller, &asset), 0);
+    assert_eq!(client.get_buyer_exposure(&buyer, &asset), 0);
 
     // Terminal session (Settled) reduction must fail
     let err_settled = client.try_reduce_session_cap(&session_id, &200);
