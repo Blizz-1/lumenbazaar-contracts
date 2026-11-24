@@ -39,31 +39,35 @@ pub enum ContractError {
     AssetNotActive = 33,
     AssetNotDeprecated = 34,
     AssetLiabilityOutstanding = 35,
-    SessionRejected = 36,
-    CapIncreasePending = 37,
-    CapIncreaseNotReady = 38,
-    CapIncreaseNotFound = 39,
-    CapIncreaseExpired = 40,
-    InvalidCapIncreaseDelay = 41,
-    UnsupportedCommitmentScheme = 42,
-    SellerExposureCeilingExceeded = 43,
-    SellerExposureCeilingNotConfigured = 44,
-    BuyerOpenSessionsExceeded = 45,
-    InvalidSessionCountLimit = 46,
-    SellerOpenSessionsExceeded = 47,
-    InvalidCapReduction = 48,
-    CreationPaused = 49,
-    OperationalStateUnchanged = 50,
-    AssetAlreadyActive = 51,
-    AssetDeprecated = 52,
-    AssetLimitReached = 53,
-    AssetExposureCeilingExceeded = 54,
-    InvalidExposureCeiling = 55,
-    ExposureCeilingNotConfigured = 56,
-    BuyerExposureCeilingExceeded = 57,
-    BuyerExposureUnderflow = 58,
-    SequenceExhausted = 59,
-    IdempotencyConflict = 60,
+    CreationPaused = 36,
+    OperationalStateUnchanged = 37,
+    AssetAlreadyActive = 38,
+    AssetDeprecated = 39,
+    AssetLimitReached = 40,
+    AssetExposureCeilingExceeded = 41,
+    InvalidExposureCeiling = 42,
+    ExposureCeilingNotConfigured = 43,
+    BuyerExposureCeilingExceeded = 44,
+    BuyerExposureUnderflow = 45,
+    SequenceExhausted = 46,
+    IdempotencyConflict = 47,
+    SellerExposureCeilingExceeded = 48,
+    SellerExposureCeilingNotConfigured = 49,
+    BuyerOpenSessionsExceeded = 50,
+    InvalidSessionCountLimit = 51,
+    SellerOpenSessionsExceeded = 52,
+    InvalidCapReduction = 53,
+    SessionRejected = 54,
+    CapIncreasePending = 55,
+    CapIncreaseNotReady = 56,
+    CapIncreaseNotFound = 57,
+    CapIncreaseExpired = 58,
+    InvalidCapIncreaseDelay = 59,
+    UnsupportedCommitmentScheme = 60,
+    CounterOverflow = 61,
+    CounterUnderflow = 62,
+    CommitmentIndexFull = 63,
+    InvalidStateTransition = 64,
 }
 
 #[cfg(test)]
@@ -107,30 +111,34 @@ mod tests {
         assert_eq!(ContractError::AssetNotActive as u32, 33);
         assert_eq!(ContractError::AssetNotDeprecated as u32, 34);
         assert_eq!(ContractError::AssetLiabilityOutstanding as u32, 35);
-        assert_eq!(ContractError::SessionRejected as u32, 36);
-        assert_eq!(ContractError::CapIncreasePending as u32, 37);
-        assert_eq!(ContractError::CapIncreaseNotReady as u32, 38);
-        assert_eq!(ContractError::CapIncreaseNotFound as u32, 39);
-        assert_eq!(ContractError::CapIncreaseExpired as u32, 40);
-        assert_eq!(ContractError::InvalidCapIncreaseDelay as u32, 41);
-        assert_eq!(ContractError::UnsupportedCommitmentScheme as u32, 42);
-        assert_eq!(ContractError::SellerExposureCeilingExceeded as u32, 43);
-        assert_eq!(ContractError::SellerExposureCeilingNotConfigured as u32, 44);
-        assert_eq!(ContractError::BuyerOpenSessionsExceeded as u32, 45);
-        assert_eq!(ContractError::InvalidSessionCountLimit as u32, 46);
-        assert_eq!(ContractError::SellerOpenSessionsExceeded as u32, 47);
-        assert_eq!(ContractError::InvalidCapReduction as u32, 48);
-        assert_eq!(ContractError::CreationPaused as u32, 49);
-        assert_eq!(ContractError::OperationalStateUnchanged as u32, 50);
-        assert_eq!(ContractError::AssetAlreadyActive as u32, 51);
-        assert_eq!(ContractError::AssetDeprecated as u32, 52);
-        assert_eq!(ContractError::AssetLimitReached as u32, 53);
-        assert_eq!(ContractError::AssetExposureCeilingExceeded as u32, 54);
-        assert_eq!(ContractError::InvalidExposureCeiling as u32, 55);
-        assert_eq!(ContractError::ExposureCeilingNotConfigured as u32, 56);
-        assert_eq!(ContractError::BuyerExposureCeilingExceeded as u32, 57);
-        assert_eq!(ContractError::BuyerExposureUnderflow as u32, 58);
-        assert_eq!(ContractError::SequenceExhausted as u32, 59);
-        assert_eq!(ContractError::IdempotencyConflict as u32, 60);
+        assert_eq!(ContractError::CreationPaused as u32, 36);
+        assert_eq!(ContractError::OperationalStateUnchanged as u32, 37);
+        assert_eq!(ContractError::AssetAlreadyActive as u32, 38);
+        assert_eq!(ContractError::AssetDeprecated as u32, 39);
+        assert_eq!(ContractError::AssetLimitReached as u32, 40);
+        assert_eq!(ContractError::AssetExposureCeilingExceeded as u32, 41);
+        assert_eq!(ContractError::InvalidExposureCeiling as u32, 42);
+        assert_eq!(ContractError::ExposureCeilingNotConfigured as u32, 43);
+        assert_eq!(ContractError::BuyerExposureCeilingExceeded as u32, 44);
+        assert_eq!(ContractError::BuyerExposureUnderflow as u32, 45);
+        assert_eq!(ContractError::SequenceExhausted as u32, 46);
+        assert_eq!(ContractError::IdempotencyConflict as u32, 47);
+        assert_eq!(ContractError::SellerExposureCeilingExceeded as u32, 48);
+        assert_eq!(ContractError::SellerExposureCeilingNotConfigured as u32, 49);
+        assert_eq!(ContractError::BuyerOpenSessionsExceeded as u32, 50);
+        assert_eq!(ContractError::InvalidSessionCountLimit as u32, 51);
+        assert_eq!(ContractError::SellerOpenSessionsExceeded as u32, 52);
+        assert_eq!(ContractError::InvalidCapReduction as u32, 53);
+        assert_eq!(ContractError::SessionRejected as u32, 54);
+        assert_eq!(ContractError::CapIncreasePending as u32, 55);
+        assert_eq!(ContractError::CapIncreaseNotReady as u32, 56);
+        assert_eq!(ContractError::CapIncreaseNotFound as u32, 57);
+        assert_eq!(ContractError::CapIncreaseExpired as u32, 58);
+        assert_eq!(ContractError::InvalidCapIncreaseDelay as u32, 59);
+        assert_eq!(ContractError::UnsupportedCommitmentScheme as u32, 60);
+        assert_eq!(ContractError::CounterOverflow as u32, 61);
+        assert_eq!(ContractError::CounterUnderflow as u32, 62);
+        assert_eq!(ContractError::CommitmentIndexFull as u32, 63);
+        assert_eq!(ContractError::InvalidStateTransition as u32, 64);
     }
 }
