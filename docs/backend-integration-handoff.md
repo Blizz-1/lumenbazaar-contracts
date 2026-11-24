@@ -126,6 +126,14 @@ administrator-rotation, and creation pause/resume events use version `3`.
 | `extend_ttl(session_id)` | Extend storage TTL for still-open sessions. |
 | `pause_creation()` | Admin-authorized transition to `Paused`; rejects new sessions before buyer authorization or token transfer without affecting existing session exits. |
 | `resume_creation()` | Admin-authorized transition back to `Active`; re-enables new session creation. |
+| `activate_asset(policy)` | Admin-authorized onboarding of a new supported asset with explicit bounds and exposure ceilings after passing the read-only SEP-41 probe. |
+| `get_asset_policy(asset)` | Read the active `AssetPolicyResponse` (bounds, ceilings, and lifecycle state) for a configured asset. |
+| `set_asset_exposure_ceiling(asset, ceiling)` | Admin-authorized update to the aggregate asset exposure ceiling for new sessions. |
+| `get_asset_exposure_ceiling(asset)` | Read the configured aggregate asset exposure ceiling for a supported asset. |
+| `set_buyer_exposure_ceiling(asset, ceiling)` | Admin-authorized update to the per-buyer exposure ceiling for new sessions. |
+| `get_buyer_exposure_ceiling(asset)` | Read the configured per-buyer exposure ceiling for a supported asset. |
+| `get_buyer_exposure(buyer, asset)` | Read a buyer's current open-session escrow exposure for a supported asset. |
+| `get_asset_solvency(asset)` | Read a single-asset `AssetSolvencySnapshot` (balance, liability, surplus, and solvency status) without authorization. |
 
 ## Indexed Event Topics
 

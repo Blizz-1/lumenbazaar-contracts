@@ -80,6 +80,11 @@ fn settle_seeded_corpus() {
 }
 
 #[test]
+fn transitions_seeded_corpus() {
+    campaign("transitions");
+}
+
+#[test]
 fn policy_seeded_corpus() {
     campaign("policy");
 }

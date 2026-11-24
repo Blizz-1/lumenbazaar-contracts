@@ -25,7 +25,7 @@ mod session;
 pub use amount::token_amount;
 pub use multi_asset::multi_asset;
 pub use policy::policy;
-pub use session::{create, settle};
+pub use session::{create, settle, transitions};
 
 use core::fmt::Debug;
 
@@ -44,6 +44,7 @@ pub type Target = fn(&[u8]);
 pub const TARGETS: &[(&str, Target)] = &[
     ("create", create),
     ("settle", settle),
+    ("transitions", transitions),
     ("policy", policy),
     ("token_amount", token_amount),
     ("multi_asset", multi_asset),

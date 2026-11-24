@@ -19,6 +19,8 @@
 
 extern crate std;
 
+use std::string::ToString;
+
 use crate::{
     events,
     ids::{self, SessionIdInput, UsageCommitmentInput},
