@@ -28,12 +28,17 @@ mod storage_lifecycle_harness {
     include!("storage_lifecycle_test.rs");
 }
 
+mod panic_free_regression_harness {
+    include!("panic_free_test.rs");
+}
+
 // Global auth mocks in the legacy tests below isolate validation, state,
 // event, and resource-accounting behavior. They are not authorization
 // evidence. Release-gating authorization paths belong in
 // `authorization_harness` and must use explicit trees.
 
 use super::*;
+use core::sync::atomic::{AtomicU64, Ordering};
 use soroban_sdk::{
     testutils::{Address as _, Events as _, Ledger as _, MockAuth, MockAuthInvoke},
     token, Address, BytesN, Env, Event, IntoVal,
@@ -46,6 +51,15 @@ use test_token::{
     reentry::{ReentryAction, ReentryTokenContract, ReentryTokenContractClient},
     TestTokenContract, TestTokenContractClient,
 };
+
+static TEST_KEY_COUNTER: AtomicU64 = AtomicU64::new(100);
+
+fn next_idempotency_key(env: &Env) -> BytesN<32> {
+    let id = TEST_KEY_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let mut bytes = [0u8; 32];
+    bytes[0..8].copy_from_slice(&id.to_be_bytes());
+    BytesN::from_array(env, &bytes)
+}
 
 fn create_test_asset(env: &Env, buyer: &Address, amount: i128) -> Address {
     let token_admin = Address::generate(env);
@@ -87,6 +101,14 @@ fn asset_policy(asset: &Address, max_session_amount: i128) -> AssetPolicy {
     }
 }
 
+fn next_idempotency_key(env: &Env) -> BytesN<32> {
+    static NEXT: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(1);
+    let n = NEXT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+    let mut bytes = [0u8; 32];
+    bytes[..8].copy_from_slice(&n.to_be_bytes());
+    BytesN::from_array(env, &bytes)
+}
+
 fn create_adversarial_token(env: &Env, buyer: &Address, amount: i128) -> Address {
     let admin = Address::generate(env);
     let token_id = env.register(AdversarialTokenContract, ());
@@ -116,13 +138,7 @@ fn assert_adversarial_creation_rolls_back(behavior: AdversarialBehavior) {
             &500,
             &50,
             &BytesN::from_array(&env, &[71; 32]),
-            &BytesN::from_array(
-                &env,
-                &[
-                    0, 1, 0xab, 0xcd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                    0, 0, 0, 0, 0, 0, 0, 1
-                ]
-            )
+            &next_idempotency_key(&env),
         )
         .is_err());
     assert_eq!(token.raw_balance(&buyer), 500);
@@ -275,13 +291,7 @@ fn native_rpc_differential_create_session() {
         &100,
         &50,
         &BytesN::from_array(&env, &[76; 32]),
-        &BytesN::from_array(
-            &env,
-            &[
-                0, 2, 0xab, 0xcd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 1,
-            ],
-        ),
+        &next_idempotency_key(&env),
     );
     print_native_rpc_fixture(
         "create_session",
@@ -311,13 +321,7 @@ fn native_rpc_differential_read_settled() {
         &100,
         &50,
         &BytesN::from_array(&env, &[77; 32]),
-        &BytesN::from_array(
-            &env,
-            &[
-                0, 3, 0xab, 0xcd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 1,
-            ],
-        ),
+        &next_idempotency_key(&env),
     );
     client.settle(&session_id, &60, &BytesN::from_array(&env, &[78; 32]));
     let session = client.get_session(&session_id);
@@ -349,13 +353,7 @@ fn native_rpc_differential_repeated_settle() {
         &100,
         &50,
         &BytesN::from_array(&env, &[79; 32]),
-        &BytesN::from_array(
-            &env,
-            &[
-                0, 4, 0xab, 0xcd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 1,
-            ],
-        ),
+        &next_idempotency_key(&env),
     );
     let usage_hash = BytesN::from_array(&env, &[80; 32]);
     client.settle(&session_id, &60, &usage_hash);
@@ -390,13 +388,7 @@ fn native_rpc_differential_repeated_cancel() {
         &100,
         &50,
         &BytesN::from_array(&env, &[81; 32]),
-        &BytesN::from_array(
-            &env,
-            &[
-                0, 5, 0xab, 0xcd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 1,
-            ],
-        ),
+        &next_idempotency_key(&env),
     );
     client.cancel(&session_id);
     assert_eq!(
@@ -430,13 +422,7 @@ fn native_rpc_differential_repeated_recovery() {
         &100,
         &50,
         &BytesN::from_array(&env, &[82; 32]),
-        &BytesN::from_array(
-            &env,
-            &[
-                0, 6, 0xab, 0xcd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 1,
-            ],
-        ),
+        &next_idempotency_key(&env),
     );
     env.ledger().set_sequence_number(50);
     client.recover_expired(&session_id);
@@ -475,13 +461,7 @@ fn nested_create_during_funding_is_rejected_without_duplicate_state() {
         &100,
         &50,
         &resource_hash,
-        &BytesN::from_array(
-            &env,
-            &[
-                0, 7, 0xab, 0xcd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 1,
-            ],
-        ),
+        &next_idempotency_key(&env),
     );
     let event_count = escrow_event_count(&env, &contract_id);
     let auth_count = env.auths().len();
@@ -517,13 +497,7 @@ fn nested_settle_during_payout_cannot_finalize_twice() {
         &100,
         &50,
         &BytesN::from_array(&env, &[71; 32]),
-        &BytesN::from_array(
-            &env,
-            &[
-                0, 8, 0xab, 0xcd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 1,
-            ],
-        ),
+        &next_idempotency_key(&env),
     );
     let usage_hash = BytesN::from_array(&env, &[72; 32]);
     token.configure_terminal(
@@ -571,13 +545,7 @@ fn nested_cancel_during_refund_cannot_finalize_twice() {
         &100,
         &50,
         &BytesN::from_array(&env, &[73; 32]),
-        &BytesN::from_array(
-            &env,
-            &[
-                0, 9, 0xab, 0xcd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 1,
-            ],
-        ),
+        &next_idempotency_key(&env),
     );
     token.configure_terminal(
         &contract_id,
@@ -625,13 +593,7 @@ fn nested_recovery_during_refund_cannot_finalize_twice() {
         &100,
         &10,
         &BytesN::from_array(&env, &[75; 32]),
-        &BytesN::from_array(
-            &env,
-            &[
-                0, 10, 0xab, 0xcd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 1,
-            ],
-        ),
+        &next_idempotency_key(&env),
     );
     token.configure_terminal(
         &contract_id,
@@ -677,13 +639,7 @@ fn public_interface_is_callable() {
 
     initialize_for_asset(&env, &client, &buyer, &asset);
 
-    let idempotency_key = BytesN::from_array(
-        &env,
-        &[
-            0, 11, 0xab, 0xcd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-            0, 0, 0, 0, 1,
-        ],
-    );
+    let idempotency_key = next_idempotency_key(&env);
     let expected_id = env.as_contract(&contract_id, || {
         ids::derive_session_id(
             &env,
@@ -694,6 +650,7 @@ fn public_interface_is_callable() {
                 max_amount: 100,
                 expires_at_ledger: 10,
                 resource_hash: &resource_hash,
+                idempotency_key: &idempotency_key,
                 sequence: 0,
                 idempotency_key: &idempotency_key,
             },
@@ -737,13 +694,7 @@ fn public_interface_is_callable() {
         &100,
         &10,
         &resource_hash,
-        &BytesN::from_array(
-            &env,
-            &[
-                0, 12, 0xab, 0xcd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 1,
-            ],
-        ),
+        &next_idempotency_key(&env),
     );
     client.cancel(&session_id_2);
     let cancelled_session = client.get_session(&session_id_2);
@@ -761,13 +712,7 @@ fn public_interface_is_callable() {
         &100,
         &10,
         &resource_hash,
-        &BytesN::from_array(
-            &env,
-            &[
-                0, 13, 0xab, 0xcd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 1,
-            ],
-        ),
+        &next_idempotency_key(&env),
     );
     client.extend_ttl(&session_id_3);
 }
@@ -791,13 +736,7 @@ fn resource_usage_create_session() {
         &500,
         &50,
         &resource_hash,
-        &BytesN::from_array(
-            &env,
-            &[
-                0, 14, 0xab, 0xcd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 1,
-            ],
-        ),
+        &next_idempotency_key(&env),
     );
 
     print_resource_usage("create_session", &env);
@@ -822,13 +761,7 @@ fn resource_usage_settle() {
         &500,
         &50,
         &resource_hash,
-        &BytesN::from_array(
-            &env,
-            &[
-                0, 15, 0xab, 0xcd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 1,
-            ],
-        ),
+        &next_idempotency_key(&env),
     );
 
     client.settle(&session_id, &125, &usage_hash);
@@ -854,13 +787,7 @@ fn resource_usage_cancel() {
         &500,
         &50,
         &resource_hash,
-        &BytesN::from_array(
-            &env,
-            &[
-                0, 16, 0xab, 0xcd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 1,
-            ],
-        ),
+        &next_idempotency_key(&env),
     );
 
     client.cancel(&session_id);
@@ -886,13 +813,7 @@ fn resource_usage_extend_ttl() {
         &500,
         &50,
         &resource_hash,
-        &BytesN::from_array(
-            &env,
-            &[
-                0, 17, 0xab, 0xcd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 1,
-            ],
-        ),
+        &next_idempotency_key(&env),
     );
 
     client.extend_ttl(&session_id);
@@ -918,13 +839,7 @@ fn resource_usage_recover_expired() {
         &500,
         &50,
         &resource_hash,
-        &BytesN::from_array(
-            &env,
-            &[
-                0, 18, 0xab, 0xcd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 1,
-            ],
-        ),
+        &next_idempotency_key(&env),
     );
     env.ledger().set_sequence_number(50);
 
@@ -1237,18 +1152,13 @@ fn per_asset_caps_enforce_boundaries_before_buyer_authorization() {
             &101,
             &50,
             &resource_hash,
-            &BytesN::from_array(
-                &env,
-                &[
-                    0, 19, 0xab, 0xcd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                    0, 0, 0, 0, 0, 0, 0, 1
-                ]
-            )
+            &next_idempotency_key(&env)
         ),
         Err(Ok(ContractError::AmountExceedsCap))
     );
     assert_eq!(token::Client::new(&env, &first_asset).balance(&buyer), 500);
 
+    let idempotency_key = next_idempotency_key(&env);
     client
         .mock_auths(&[MockAuth {
             address: &buyer,
@@ -1262,6 +1172,7 @@ fn per_asset_caps_enforce_boundaries_before_buyer_authorization() {
                     100_i128,
                     50_u32,
                     resource_hash.clone(),
+                    idempotency_key.clone(),
                 )
                     .into_val(&env),
                 sub_invokes: &[MockAuthInvoke {
@@ -1279,13 +1190,7 @@ fn per_asset_caps_enforce_boundaries_before_buyer_authorization() {
             &100,
             &50,
             &resource_hash,
-            &BytesN::from_array(
-                &env,
-                &[
-                    0, 20, 0xab, 0xcd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                    0, 0, 0, 0, 0, 0, 0, 1,
-                ],
-            ),
+            &idempotency_key,
         );
 }
 
@@ -1308,13 +1213,7 @@ fn admin_cap_updates_emit_events_and_do_not_rewrite_existing_sessions() {
         &100,
         &50,
         &resource_hash,
-        &BytesN::from_array(
-            &env,
-            &[
-                0, 21, 0xab, 0xcd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 1,
-            ],
-        ),
+        &next_idempotency_key(&env),
     );
 
     client.set_asset_max_session_amount(&asset, &50);
@@ -1345,13 +1244,7 @@ fn admin_cap_updates_emit_events_and_do_not_rewrite_existing_sessions() {
             &51,
             &50,
             &resource_hash,
-            &BytesN::from_array(
-                &env,
-                &[
-                    0, 22, 0xab, 0xcd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                    0, 0, 0, 0, 0, 0, 0, 1
-                ]
-            )
+            &next_idempotency_key(&env)
         ),
         Err(Ok(ContractError::AmountExceedsCap))
     );
@@ -1657,13 +1550,7 @@ fn create_rejects_uninitialized_unsupported_and_excessive_duration() {
             &500,
             &50,
             &resource_hash,
-            &BytesN::from_array(
-                &env,
-                &[
-                    0, 23, 0xab, 0xcd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                    0, 0, 0, 0, 0, 0, 0, 1
-                ]
-            )
+            &next_idempotency_key(&env),
         ),
         Err(Ok(ContractError::NotInitialized))
     );
@@ -1679,13 +1566,7 @@ fn create_rejects_uninitialized_unsupported_and_excessive_duration() {
             &500,
             &50,
             &resource_hash,
-            &BytesN::from_array(
-                &env,
-                &[
-                    0, 24, 0xab, 0xcd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                    0, 0, 0, 0, 0, 0, 0, 1
-                ]
-            )
+            &next_idempotency_key(&env),
         ),
         Err(Ok(ContractError::UnsupportedAsset))
     );
@@ -1697,13 +1578,7 @@ fn create_rejects_uninitialized_unsupported_and_excessive_duration() {
             &500,
             &(validation::MAX_SESSION_DURATION_LEDGERS + 1),
             &resource_hash,
-            &BytesN::from_array(
-                &env,
-                &[
-                    0, 25, 0xab, 0xcd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                    0, 0, 0, 0, 0, 0, 0, 1
-                ]
-            )
+            &next_idempotency_key(&env),
         ),
         Err(Ok(ContractError::SessionDurationTooLong))
     );
@@ -1775,13 +1650,7 @@ fn public_liability_query_handles_initialization_support_and_multiple_assets() {
         &100,
         &50,
         &first_hash,
-        &BytesN::from_array(
-            &env,
-            &[
-                0, 26, 0xab, 0xcd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 1,
-            ],
-        ),
+        &next_idempotency_key(&env),
     );
     client.create_session(
         &buyer,
@@ -1790,13 +1659,7 @@ fn public_liability_query_handles_initialization_support_and_multiple_assets() {
         &250,
         &50,
         &second_hash,
-        &BytesN::from_array(
-            &env,
-            &[
-                0, 27, 0xab, 0xcd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 1,
-            ],
-        ),
+        &next_idempotency_key(&env),
     );
 
     assert_eq!(client.get_escrow_liability(&first_asset), 100);
@@ -1823,13 +1686,7 @@ fn public_liability_reconciles_concurrent_sessions_and_all_terminal_paths() {
         &100,
         &50,
         &BytesN::from_array(&env, &[67; 32]),
-        &BytesN::from_array(
-            &env,
-            &[
-                0, 28, 0xab, 0xcd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 1,
-            ],
-        ),
+        &next_idempotency_key(&env),
     );
     let cancelled_id = client.create_session(
         &buyer,
@@ -1838,13 +1695,7 @@ fn public_liability_reconciles_concurrent_sessions_and_all_terminal_paths() {
         &200,
         &50,
         &BytesN::from_array(&env, &[68; 32]),
-        &BytesN::from_array(
-            &env,
-            &[
-                0, 29, 0xab, 0xcd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 1,
-            ],
-        ),
+        &next_idempotency_key(&env),
     );
     let expired_id = client.create_session(
         &buyer,
@@ -1853,13 +1704,7 @@ fn public_liability_reconciles_concurrent_sessions_and_all_terminal_paths() {
         &300,
         &50,
         &BytesN::from_array(&env, &[69; 32]),
-        &BytesN::from_array(
-            &env,
-            &[
-                0, 30, 0xab, 0xcd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 1,
-            ],
-        ),
+        &next_idempotency_key(&env),
     );
     assert_eq!(client.get_escrow_liability(&asset), 600);
     assert_eq!(token.balance(&contract_id), 600);
@@ -1899,13 +1744,7 @@ fn maximum_value_session_conserves_escrow() {
         &i128::MAX,
         &50,
         &resource_hash,
-        &BytesN::from_array(
-            &env,
-            &[
-                0, 31, 0xab, 0xcd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 1,
-            ],
-        ),
+        &next_idempotency_key(&env),
     );
     client.settle(&session_id, &1, &usage_hash);
 
@@ -1937,13 +1776,7 @@ fn invalid_create_inputs_do_not_consume_sequence() {
             &0,
             &10,
             &resource_hash,
-            &BytesN::from_array(
-                &env,
-                &[
-                    0, 32, 0xab, 0xcd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                    0, 0, 0, 0, 0, 0, 0, 1
-                ]
-            )
+            &next_idempotency_key(&env)
         ),
         Err(Ok(ContractError::InvalidAmount))
     );
@@ -1973,13 +1806,7 @@ fn expired_create_input_fails_before_storage_write() {
             &100,
             &20,
             &resource_hash,
-            &BytesN::from_array(
-                &env,
-                &[
-                    0, 33, 0xab, 0xcd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                    0, 0, 0, 0, 0, 0, 0, 1
-                ]
-            )
+            &next_idempotency_key(&env)
         ),
         Err(Ok(ContractError::ExpiredSession))
     );
@@ -2008,13 +1835,7 @@ fn create_session_stores_open_session() {
         &500,
         &25,
         &resource_hash,
-        &BytesN::from_array(
-            &env,
-            &[
-                0, 34, 0xab, 0xcd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 1,
-            ],
-        ),
+        &next_idempotency_key(&env),
     );
 
     env.as_contract(&contract_id, || {
@@ -2054,13 +1875,7 @@ fn create_session_emits_stable_event() {
         &500,
         &25,
         &resource_hash,
-        &BytesN::from_array(
-            &env,
-            &[
-                0, 35, 0xab, 0xcd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 1,
-            ],
-        ),
+        &next_idempotency_key(&env),
     );
 
     assert_eq!(
@@ -2112,13 +1927,7 @@ fn create_session_requires_buyer_auth() {
         &500,
         &25,
         &resource_hash,
-        &BytesN::from_array(
-            &env,
-            &[
-                0, 36, 0xab, 0xcd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 1,
-            ],
-        ),
+        &next_idempotency_key(&env),
     );
 
     assert!(result.is_err());
@@ -2146,13 +1955,7 @@ fn get_session_returns_full_state() {
         &900,
         &30,
         &resource_hash,
-        &BytesN::from_array(
-            &env,
-            &[
-                0, 37, 0xab, 0xcd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 1,
-            ],
-        ),
+        &next_idempotency_key(&env),
     );
     let session = client.get_session(&session_id);
 
@@ -2204,13 +2007,7 @@ fn session_status_query_decodes_open_and_all_terminal_states_compatibly() {
         &100,
         &50,
         &BytesN::from_array(&env, &[101; 32]),
-        &BytesN::from_array(
-            &env,
-            &[
-                0, 38, 0xab, 0xcd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 1,
-            ],
-        ),
+        &next_idempotency_key(&env),
     );
     let settled_id = client.create_session(
         &buyer,
@@ -2219,13 +2016,7 @@ fn session_status_query_decodes_open_and_all_terminal_states_compatibly() {
         &100,
         &50,
         &BytesN::from_array(&env, &[102; 32]),
-        &BytesN::from_array(
-            &env,
-            &[
-                0, 39, 0xab, 0xcd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 1,
-            ],
-        ),
+        &next_idempotency_key(&env),
     );
     let cancelled_id = client.create_session(
         &buyer,
@@ -2234,13 +2025,7 @@ fn session_status_query_decodes_open_and_all_terminal_states_compatibly() {
         &100,
         &50,
         &BytesN::from_array(&env, &[103; 32]),
-        &BytesN::from_array(
-            &env,
-            &[
-                0, 40, 0xab, 0xcd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 1,
-            ],
-        ),
+        &next_idempotency_key(&env),
     );
     let expired_id = client.create_session(
         &buyer,
@@ -2249,13 +2034,7 @@ fn session_status_query_decodes_open_and_all_terminal_states_compatibly() {
         &100,
         &30,
         &BytesN::from_array(&env, &[104; 32]),
-        &BytesN::from_array(
-            &env,
-            &[
-                0, 41, 0xab, 0xcd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 1,
-            ],
-        ),
+        &next_idempotency_key(&env),
     );
 
     // Verify open state
@@ -2326,13 +2105,7 @@ fn get_session_batch_returns_ordered_found_and_missing_results_with_duplicate_id
         &100,
         &30,
         &BytesN::from_array(&env, &[81; 32]),
-        &BytesN::from_array(
-            &env,
-            &[
-                0, 42, 0xab, 0xcd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 1,
-            ],
-        ),
+        &next_idempotency_key(&env),
     );
     let cancelled_id = client.create_session(
         &buyer,
@@ -2341,13 +2114,7 @@ fn get_session_batch_returns_ordered_found_and_missing_results_with_duplicate_id
         &100,
         &30,
         &BytesN::from_array(&env, &[82; 32]),
-        &BytesN::from_array(
-            &env,
-            &[
-                0, 43, 0xab, 0xcd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 1,
-            ],
-        ),
+        &next_idempotency_key(&env),
     );
     let settled_id = client.create_session(
         &buyer,
@@ -2356,13 +2123,7 @@ fn get_session_batch_returns_ordered_found_and_missing_results_with_duplicate_id
         &100,
         &30,
         &BytesN::from_array(&env, &[83; 32]),
-        &BytesN::from_array(
-            &env,
-            &[
-                0, 44, 0xab, 0xcd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 1,
-            ],
-        ),
+        &next_idempotency_key(&env),
     );
     let expired_id = client.create_session(
         &buyer,
@@ -2371,13 +2132,7 @@ fn get_session_batch_returns_ordered_found_and_missing_results_with_duplicate_id
         &100,
         &10,
         &BytesN::from_array(&env, &[84; 32]),
-        &BytesN::from_array(
-            &env,
-            &[
-                0, 45, 0xab, 0xcd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 1,
-            ],
-        ),
+        &next_idempotency_key(&env),
     );
 
     client.cancel(&cancelled_id);
@@ -2470,13 +2225,7 @@ fn get_session_batch_enforces_nonzero_and_max_batch_size_bounds() {
             &100,
             &30,
             &BytesN::from_array(&env, &[(90 + idx) as u8; 32]),
-            &BytesN::from_array(
-                &env,
-                &[
-                    0, 46, 0xab, 0xcd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                    0, 0, 0, 0, 0, 0, 0, 1,
-                ],
-            ),
+            &next_idempotency_key(&env),
         );
         max_batch.push_back(id);
     }
@@ -2525,13 +2274,7 @@ fn get_session_batch_resource_usage_is_read_only_and_bounded() {
             &100,
             &50,
             &BytesN::from_array(&env, &[(110 + idx) as u8; 32]),
-            &BytesN::from_array(
-                &env,
-                &[
-                    0, 47, 0xab, 0xcd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                    0, 0, 0, 0, 0, 0, 0, 1,
-                ],
-            ),
+            &next_idempotency_key(&env),
         );
         batch_ids.push_back(session_id);
     }
@@ -2578,7 +2321,7 @@ fn settle_requires_seller_auth() {
     let usage_hash = BytesN::from_array(&env, &[9; 32]);
 
     env.as_contract(&contract_id, || {
-        storage::write_session(
+        let _ = storage::write_session(
             &env,
             &Session {
                 id: session_id.clone(),
@@ -2597,7 +2340,8 @@ fn settle_requires_seller_auth() {
                 resource_scheme_version: 1,
                 usage_scheme_version: None,
             },
-        );
+        )
+        .unwrap();
     });
 
     assert!(client.try_settle(&session_id, &10, &usage_hash).is_err());
@@ -2617,7 +2361,7 @@ fn settle_rejects_wrong_seller_auth() {
     let usage_hash = BytesN::from_array(&env, &[38; 32]);
 
     env.as_contract(&contract_id, || {
-        storage::write_session(
+        let _ = storage::write_session(
             &env,
             &Session {
                 id: session_id.clone(),
@@ -2636,7 +2380,8 @@ fn settle_rejects_wrong_seller_auth() {
                 resource_scheme_version: 1,
                 usage_scheme_version: None,
             },
-        );
+        )
+        .unwrap();
     });
 
     let result = client
@@ -2674,7 +2419,7 @@ fn settle_rejects_finalized_sessions() {
     let cancelled_id = BytesN::from_array(&env, &[11; 32]);
 
     env.as_contract(&contract_id, || {
-        storage::write_session(
+        let _ = storage::write_session(
             &env,
             &Session {
                 id: settled_id.clone(),
@@ -2694,7 +2439,7 @@ fn settle_rejects_finalized_sessions() {
                 usage_scheme_version: Some(1),
             },
         );
-        storage::write_session(
+        let _ = storage::write_session(
             &env,
             &Session {
                 id: cancelled_id.clone(),
@@ -2713,7 +2458,8 @@ fn settle_rejects_finalized_sessions() {
                 resource_scheme_version: 1,
                 usage_scheme_version: None,
             },
-        );
+        )
+        .unwrap();
     });
 
     assert_eq!(
@@ -2747,13 +2493,7 @@ fn settle_stores_actual_amount_and_status() {
         &500,
         &50,
         &resource_hash,
-        &BytesN::from_array(
-            &env,
-            &[
-                0, 48, 0xab, 0xcd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 1,
-            ],
-        ),
+        &next_idempotency_key(&env),
     );
     client.settle(&session_id, &125, &usage_hash);
     let session = client.get_session(&session_id);
@@ -2788,13 +2528,7 @@ fn settle_accepts_exact_cap_without_refund() {
         &500,
         &50,
         &resource_hash,
-        &BytesN::from_array(
-            &env,
-            &[
-                0, 49, 0xab, 0xcd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 1,
-            ],
-        ),
+        &next_idempotency_key(&env),
     );
     client.settle(&session_id, &500, &usage_hash);
 
@@ -2833,13 +2567,7 @@ fn settlement_isolates_concurrent_sessions_sharing_an_asset() {
         &400,
         &50,
         &resource_one,
-        &BytesN::from_array(
-            &env,
-            &[
-                0, 50, 0xab, 0xcd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 1,
-            ],
-        ),
+        &next_idempotency_key(&env),
     );
     let second = client.create_session(
         &buyer,
@@ -2848,13 +2576,7 @@ fn settlement_isolates_concurrent_sessions_sharing_an_asset() {
         &600,
         &50,
         &resource_two,
-        &BytesN::from_array(
-            &env,
-            &[
-                0, 51, 0xab, 0xcd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 1,
-            ],
-        ),
+        &next_idempotency_key(&env),
     );
     client.settle(&first, &150, &usage_one);
 
@@ -2975,13 +2697,7 @@ fn asset_deprecation_requires_admin_and_blocks_new_sessions() {
             &100,
             &50,
             &resource_hash,
-            &BytesN::from_array(
-                &env,
-                &[
-                    0, 52, 0xab, 0xcd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                    0, 0, 0, 0, 0, 0, 0, 1
-                ]
-            )
+            &next_idempotency_key(&env)
         ),
         Err(Ok(ContractError::UnsupportedAsset))
     );
@@ -3006,13 +2722,7 @@ fn deprecated_asset_terminal_paths_clear_liability_before_removal() {
         &300,
         &50,
         &BytesN::from_array(&env, &[72; 32]),
-        &BytesN::from_array(
-            &env,
-            &[
-                0, 53, 0xab, 0xcd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 1,
-            ],
-        ),
+        &next_idempotency_key(&env),
     );
     let cancel_id = client.create_session(
         &buyer,
@@ -3021,13 +2731,7 @@ fn deprecated_asset_terminal_paths_clear_liability_before_removal() {
         &300,
         &50,
         &BytesN::from_array(&env, &[73; 32]),
-        &BytesN::from_array(
-            &env,
-            &[
-                0, 54, 0xab, 0xcd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 1,
-            ],
-        ),
+        &next_idempotency_key(&env),
     );
     let recover_id = client.create_session(
         &buyer,
@@ -3036,13 +2740,7 @@ fn deprecated_asset_terminal_paths_clear_liability_before_removal() {
         &300,
         &50,
         &BytesN::from_array(&env, &[74; 32]),
-        &BytesN::from_array(
-            &env,
-            &[
-                0, 55, 0xab, 0xcd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 1,
-            ],
-        ),
+        &next_idempotency_key(&env),
     );
 
     let deprecate_reason = BytesN::from_array(&env, &[77; 32]);
@@ -3127,13 +2825,7 @@ fn undercollateralized_settlement_fails_without_state_transition() {
         &500,
         &50,
         &resource_hash,
-        &BytesN::from_array(
-            &env,
-            &[
-                0, 56, 0xab, 0xcd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 1,
-            ],
-        ),
+        &next_idempotency_key(&env),
     );
     env.as_contract(&contract_id, || {
         token_client.transfer(&contract_id, &sink, &1);
@@ -3175,13 +2867,7 @@ fn settle_accepts_local_test_token_contract() {
         &500,
         &50,
         &resource_hash,
-        &BytesN::from_array(
-            &env,
-            &[
-                0, 57, 0xab, 0xcd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 1,
-            ],
-        ),
+        &next_idempotency_key(&env),
     );
     client.settle(&session_id, &125, &usage_hash);
 
@@ -3218,13 +2904,7 @@ fn adversarial_terminal_failures_leave_the_session_open_and_funded() {
         &500,
         &50,
         &BytesN::from_array(&env, &[72; 32]),
-        &BytesN::from_array(
-            &env,
-            &[
-                0, 58, 0xab, 0xcd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 1,
-            ],
-        ),
+        &next_idempotency_key(&env),
     );
     let usage_hash = BytesN::from_array(&env, &[73; 32]);
 
@@ -3275,13 +2955,7 @@ fn nested_token_callback_cannot_reenter_a_terminal_transition() {
         &500,
         &50,
         &BytesN::from_array(&env, &[74; 32]),
-        &BytesN::from_array(
-            &env,
-            &[
-                0, 59, 0xab, 0xcd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 1,
-            ],
-        ),
+        &next_idempotency_key(&env),
     );
     let usage_hash = BytesN::from_array(&env, &[75; 32]);
     token.configure_nested_attempt(&contract_id, &session_id, &100, &usage_hash);
@@ -3321,13 +2995,7 @@ fn settle_rejects_invalid_amounts_and_expiry() {
         &500,
         &50,
         &resource_hash,
-        &BytesN::from_array(
-            &env,
-            &[
-                0, 60, 0xab, 0xcd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 1,
-            ],
-        ),
+        &next_idempotency_key(&env),
     );
     let over_cap_id = client.create_session(
         &buyer,
@@ -3336,13 +3004,7 @@ fn settle_rejects_invalid_amounts_and_expiry() {
         &500,
         &50,
         &resource_hash,
-        &BytesN::from_array(
-            &env,
-            &[
-                0, 61, 0xab, 0xcd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 1,
-            ],
-        ),
+        &next_idempotency_key(&env),
     );
     let expired_id = client.create_session(
         &buyer,
@@ -3351,13 +3013,7 @@ fn settle_rejects_invalid_amounts_and_expiry() {
         &500,
         &50,
         &resource_hash,
-        &BytesN::from_array(
-            &env,
-            &[
-                0, 62, 0xab, 0xcd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 1,
-            ],
-        ),
+        &next_idempotency_key(&env),
     );
 
     assert_eq!(
@@ -3399,13 +3055,7 @@ fn expired_open_session_remains_observable_and_permissionlessly_recoverable() {
         &500,
         &50,
         &resource_hash,
-        &BytesN::from_array(
-            &env,
-            &[
-                0, 63, 0xab, 0xcd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 1,
-            ],
-        ),
+        &next_idempotency_key(&env),
     );
 
     env.ledger().set_sequence_number(50);
@@ -3453,13 +3103,7 @@ fn expiry_boundary_selects_exactly_one_terminal_path() {
         &500,
         &50,
         &resource_hash,
-        &BytesN::from_array(
-            &env,
-            &[
-                0, 64, 0xab, 0xcd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 1,
-            ],
-        ),
+        &next_idempotency_key(&env),
     );
     let cancels_before = client.create_session(
         &buyer,
@@ -3468,13 +3112,7 @@ fn expiry_boundary_selects_exactly_one_terminal_path() {
         &500,
         &50,
         &resource_hash,
-        &BytesN::from_array(
-            &env,
-            &[
-                0, 65, 0xab, 0xcd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 1,
-            ],
-        ),
+        &next_idempotency_key(&env),
     );
     let recovers_at = client.create_session(
         &buyer,
@@ -3483,13 +3121,7 @@ fn expiry_boundary_selects_exactly_one_terminal_path() {
         &500,
         &50,
         &resource_hash,
-        &BytesN::from_array(
-            &env,
-            &[
-                0, 66, 0xab, 0xcd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 1,
-            ],
-        ),
+        &next_idempotency_key(&env),
     );
 
     assert_eq!(
@@ -3545,13 +3177,7 @@ fn expiry_recovery_is_permissionless_fixed_recipient_and_single_use() {
         &500,
         &50,
         &resource_hash,
-        &BytesN::from_array(
-            &env,
-            &[
-                0, 67, 0xab, 0xcd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 1,
-            ],
-        ),
+        &next_idempotency_key(&env),
     );
 
     env.ledger().set_sequence_number(51);
@@ -3594,13 +3220,7 @@ fn batch_recovery_is_bounded_and_reports_partial_results_in_order() {
         &100,
         &10,
         &BytesN::from_array(&env, &[70; 32]),
-        &BytesN::from_array(
-            &env,
-            &[
-                0, 68, 0xab, 0xcd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 1,
-            ],
-        ),
+        &next_idempotency_key(&env),
     );
     let cancelled = client.create_session(
         &buyer,
@@ -3609,13 +3229,7 @@ fn batch_recovery_is_bounded_and_reports_partial_results_in_order() {
         &100,
         &20,
         &BytesN::from_array(&env, &[71; 32]),
-        &BytesN::from_array(
-            &env,
-            &[
-                0, 69, 0xab, 0xcd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 1,
-            ],
-        ),
+        &next_idempotency_key(&env),
     );
     let settled = client.create_session(
         &buyer,
@@ -3624,13 +3238,7 @@ fn batch_recovery_is_bounded_and_reports_partial_results_in_order() {
         &100,
         &20,
         &BytesN::from_array(&env, &[72; 32]),
-        &BytesN::from_array(
-            &env,
-            &[
-                0, 70, 0xab, 0xcd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 1,
-            ],
-        ),
+        &next_idempotency_key(&env),
     );
     let not_expired = client.create_session(
         &buyer,
@@ -3639,13 +3247,7 @@ fn batch_recovery_is_bounded_and_reports_partial_results_in_order() {
         &100,
         &20,
         &BytesN::from_array(&env, &[73; 32]),
-        &BytesN::from_array(
-            &env,
-            &[
-                0, 71, 0xab, 0xcd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 1,
-            ],
-        ),
+        &next_idempotency_key(&env),
     );
     client.cancel(&cancelled);
     client.settle(&settled, &100, &BytesN::from_array(&env, &[74; 32]));
@@ -3746,13 +3348,7 @@ fn batch_recovery_refunds_each_stored_buyer_only() {
         &100,
         &10,
         &BytesN::from_array(&env, &[76; 32]),
-        &BytesN::from_array(
-            &env,
-            &[
-                0, 72, 0xab, 0xcd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 1,
-            ],
-        ),
+        &next_idempotency_key(&env),
     );
     let second = client.create_session(
         &second_buyer,
@@ -3761,13 +3357,7 @@ fn batch_recovery_refunds_each_stored_buyer_only() {
         &100,
         &10,
         &BytesN::from_array(&env, &[77; 32]),
-        &BytesN::from_array(
-            &env,
-            &[
-                0, 73, 0xab, 0xcd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 1,
-            ],
-        ),
+        &next_idempotency_key(&env),
     );
     env.ledger().set_sequence_number(10);
 
@@ -3803,13 +3393,7 @@ fn expiry_recovery_rejects_missing_settled_and_cancelled_sessions() {
         &500,
         &50,
         &resource_hash,
-        &BytesN::from_array(
-            &env,
-            &[
-                0, 74, 0xab, 0xcd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 1,
-            ],
-        ),
+        &next_idempotency_key(&env),
     );
     let cancelled = client.create_session(
         &buyer,
@@ -3818,13 +3402,7 @@ fn expiry_recovery_rejects_missing_settled_and_cancelled_sessions() {
         &500,
         &50,
         &resource_hash,
-        &BytesN::from_array(
-            &env,
-            &[
-                0, 75, 0xab, 0xcd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 1,
-            ],
-        ),
+        &next_idempotency_key(&env),
     );
     client.settle(&settled, &250, &usage_hash);
     client.cancel(&cancelled);
@@ -3862,13 +3440,7 @@ fn expiry_recovery_emits_versioned_receipt() {
         &500,
         &50,
         &resource_hash,
-        &BytesN::from_array(
-            &env,
-            &[
-                0, 76, 0xab, 0xcd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 1,
-            ],
-        ),
+        &next_idempotency_key(&env),
     );
 
     env.ledger().set_sequence_number(50);
@@ -3910,13 +3482,7 @@ fn insufficient_funding_prevents_session_creation() {
             &500,
             &50,
             &resource_hash,
-            &BytesN::from_array(
-                &env,
-                &[
-                    0, 77, 0xab, 0xcd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                    0, 0, 0, 0, 0, 0, 0, 1
-                ]
-            )
+            &next_idempotency_key(&env)
         )
         .is_err());
     let _ = usage_hash;
@@ -3947,13 +3513,7 @@ fn settle_rejects_empty_usage_hash_before_transfer() {
         &500,
         &50,
         &resource_hash,
-        &BytesN::from_array(
-            &env,
-            &[
-                0, 78, 0xab, 0xcd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 1,
-            ],
-        ),
+        &next_idempotency_key(&env),
     );
 
     assert_eq!(
@@ -3991,13 +3551,7 @@ fn settle_prevents_double_settlement() {
         &500,
         &50,
         &resource_hash,
-        &BytesN::from_array(
-            &env,
-            &[
-                0, 79, 0xab, 0xcd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 1,
-            ],
-        ),
+        &next_idempotency_key(&env),
     );
 
     // First settlement succeeds
@@ -4047,13 +3601,7 @@ fn settle_emits_stable_event() {
         &500,
         &50,
         &resource_hash,
-        &BytesN::from_array(
-            &env,
-            &[
-                0, 80, 0xab, 0xcd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 1,
-            ],
-        ),
+        &next_idempotency_key(&env),
     );
 
     client.settle(&session_id, &125, &usage_hash);
@@ -4092,13 +3640,7 @@ fn cancel_allows_buyer_cancellation_before_settlement() {
         &500,
         &50,
         &resource_hash,
-        &BytesN::from_array(
-            &env,
-            &[
-                0, 81, 0xab, 0xcd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 1,
-            ],
-        ),
+        &next_idempotency_key(&env),
     );
     let session_before = client.get_session(&session_id);
     assert_eq!(session_before.status, SessionStatus::Open);
@@ -4121,7 +3663,7 @@ fn cancel_requires_buyer_auth() {
     let resource_hash = BytesN::from_array(&env, &[2; 32]);
 
     env.as_contract(&contract_id, || {
-        storage::write_session(
+        let _ = storage::write_session(
             &env,
             &Session {
                 id: session_id.clone(),
@@ -4140,7 +3682,8 @@ fn cancel_requires_buyer_auth() {
                 resource_scheme_version: 1,
                 usage_scheme_version: None,
             },
-        );
+        )
+        .unwrap();
     });
 
     assert!(client.try_cancel(&session_id).is_err());
@@ -4173,7 +3716,7 @@ fn cancel_rejects_already_settled_session() {
     let usage_hash = BytesN::from_array(&env, &[21; 32]);
 
     env.as_contract(&contract_id, || {
-        storage::write_session(
+        let _ = storage::write_session(
             &env,
             &Session {
                 id: session_id.clone(),
@@ -4192,7 +3735,8 @@ fn cancel_rejects_already_settled_session() {
                 resource_scheme_version: 1,
                 usage_scheme_version: Some(1),
             },
-        );
+        )
+        .unwrap();
     });
 
     assert_eq!(
@@ -4214,7 +3758,7 @@ fn cancel_rejects_already_cancelled_session() {
     let resource_hash = BytesN::from_array(&env, &[23; 32]);
 
     env.as_contract(&contract_id, || {
-        storage::write_session(
+        let _ = storage::write_session(
             &env,
             &Session {
                 id: session_id.clone(),
@@ -4233,7 +3777,8 @@ fn cancel_rejects_already_cancelled_session() {
                 resource_scheme_version: 1,
                 usage_scheme_version: None,
             },
-        );
+        )
+        .unwrap();
     });
 
     assert_eq!(
@@ -4261,13 +3806,7 @@ fn cancel_emits_stable_event() {
         &500,
         &50,
         &resource_hash,
-        &BytesN::from_array(
-            &env,
-            &[
-                0, 82, 0xab, 0xcd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 1,
-            ],
-        ),
+        &next_idempotency_key(&env),
     );
 
     // Verify session is open before cancel
@@ -4313,13 +3852,7 @@ fn reject_allows_seller_rejection_and_refunds_buyer_only() {
         &500,
         &50,
         &resource_hash,
-        &BytesN::from_array(
-            &env,
-            &[
-                0, 83, 0xab, 0xcd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 1,
-            ],
-        ),
+        &next_idempotency_key(&env),
     );
 
     let session_before = client.get_session(&session_id);
@@ -4363,7 +3896,7 @@ fn reject_requires_seller_auth() {
     let resource_hash = BytesN::from_array(&env, &[83; 32]);
 
     env.as_contract(&contract_id, || {
-        storage::write_session(
+        let _ = storage::write_session(
             &env,
             &Session {
                 id: session_id.clone(),
@@ -4379,7 +3912,7 @@ fn reject_requires_seller_auth() {
                 status: SessionStatus::Open,
                 creation_ledger: 0,
                 finalized_ledger: None,
-                resource_scheme_version: validation::SUPPORTED_RESOURCE_SCHEME_VERSION,
+                resource_scheme_version: 1,
                 usage_scheme_version: None,
             },
         )
@@ -4415,13 +3948,7 @@ fn reject_rejects_terminal_and_expired_states() {
         &200,
         &50,
         &resource_hash,
-        &BytesN::from_array(
-            &env,
-            &[
-                0, 84, 0xab, 0xcd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 1,
-            ],
-        ),
+        &next_idempotency_key(&env),
     );
     client.reject(&rejected_id);
     assert_eq!(
@@ -4449,13 +3976,7 @@ fn reject_rejects_terminal_and_expired_states() {
         &200,
         &60,
         &resource_hash,
-        &BytesN::from_array(
-            &env,
-            &[
-                0, 85, 0xab, 0xcd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 1,
-            ],
-        ),
+        &next_idempotency_key(&env),
     );
     client.settle(&settled_id, &100, &usage_hash);
     assert_eq!(
@@ -4470,13 +3991,7 @@ fn reject_rejects_terminal_and_expired_states() {
         &200,
         &60,
         &resource_hash,
-        &BytesN::from_array(
-            &env,
-            &[
-                0, 86, 0xab, 0xcd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 1,
-            ],
-        ),
+        &next_idempotency_key(&env),
     );
     client.cancel(&cancelled_id);
     assert_eq!(
@@ -4491,13 +4006,7 @@ fn reject_rejects_terminal_and_expired_states() {
         &200,
         &70,
         &resource_hash,
-        &BytesN::from_array(
-            &env,
-            &[
-                0, 87, 0xab, 0xcd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 1,
-            ],
-        ),
+        &next_idempotency_key(&env),
     );
     env.ledger().set_sequence_number(70);
     assert_eq!(
@@ -4526,13 +4035,7 @@ fn preview_settle_calculates_exact_payout_and_refund_without_state_changes_or_au
         &500,
         &50,
         &resource_hash,
-        &BytesN::from_array(
-            &env,
-            &[
-                0, 88, 0xab, 0xcd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 1,
-            ],
-        ),
+        &next_idempotency_key(&env),
     );
 
     // 1. Valid partial settlement preview
@@ -4616,13 +4119,7 @@ fn preview_settle_reports_deterministic_rejection_reasons() {
         &500,
         &50,
         &resource_hash,
-        &BytesN::from_array(
-            &env,
-            &[
-                0, 89, 0xab, 0xcd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 1,
-            ],
-        ),
+        &next_idempotency_key(&env),
     );
     let zero_preview = client.preview_settle(&session_id, &0);
     assert_eq!(
@@ -4654,13 +4151,7 @@ fn preview_settle_reports_deterministic_rejection_reasons() {
         &200,
         &30,
         &resource_hash,
-        &BytesN::from_array(
-            &env,
-            &[
-                0, 90, 0xab, 0xcd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 1,
-            ],
-        ),
+        &next_idempotency_key(&env),
     );
     env.ledger().set_sequence_number(30);
     let expired_preview = client.preview_settle(&expired_id, &100);
@@ -4685,13 +4176,7 @@ fn preview_settle_reports_deterministic_rejection_reasons() {
         &200,
         &60,
         &resource_hash,
-        &BytesN::from_array(
-            &env,
-            &[
-                0, 91, 0xab, 0xcd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 1,
-            ],
-        ),
+        &next_idempotency_key(&env),
     );
     client.settle(&s_id, &100, &usage_hash);
     assert_eq!(
@@ -4706,13 +4191,7 @@ fn preview_settle_reports_deterministic_rejection_reasons() {
         &200,
         &60,
         &resource_hash,
-        &BytesN::from_array(
-            &env,
-            &[
-                0, 92, 0xab, 0xcd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 1,
-            ],
-        ),
+        &next_idempotency_key(&env),
     );
     client.cancel(&c_id);
     assert_eq!(
@@ -4727,13 +4206,7 @@ fn preview_settle_reports_deterministic_rejection_reasons() {
         &200,
         &60,
         &resource_hash,
-        &BytesN::from_array(
-            &env,
-            &[
-                0, 93, 0xab, 0xcd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 1,
-            ],
-        ),
+        &next_idempotency_key(&env),
     );
     client.reject(&r_id);
     assert_eq!(
@@ -4748,13 +4221,7 @@ fn preview_settle_reports_deterministic_rejection_reasons() {
         &200,
         &40,
         &resource_hash,
-        &BytesN::from_array(
-            &env,
-            &[
-                0, 94, 0xab, 0xcd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 1,
-            ],
-        ),
+        &next_idempotency_key(&env),
     );
     env.ledger().set_sequence_number(40);
     client.recover_expired(&exp_id);
@@ -4776,7 +4243,7 @@ fn preview_settle_detects_undercollateralized_escrow() {
     let session_id = BytesN::from_array(&env, &[93; 32]);
 
     env.as_contract(&contract_id, || {
-        storage::write_session(
+        let _ = storage::write_session(
             &env,
             &Session {
                 id: session_id.clone(),
@@ -4792,7 +4259,7 @@ fn preview_settle_detects_undercollateralized_escrow() {
                 status: SessionStatus::Open,
                 creation_ledger: 0,
                 finalized_ledger: None,
-                resource_scheme_version: validation::SUPPORTED_RESOURCE_SCHEME_VERSION,
+                resource_scheme_version: 1,
                 usage_scheme_version: None,
             },
         )
@@ -4826,13 +4293,7 @@ fn extend_ttl_succeeds_for_open_sessions() {
         &500,
         &50,
         &resource_hash,
-        &BytesN::from_array(
-            &env,
-            &[
-                0, 95, 0xab, 0xcd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 1,
-            ],
-        ),
+        &next_idempotency_key(&env),
     );
 
     assert!(client.try_extend_ttl(&session_id).is_ok());
@@ -4851,7 +4312,7 @@ fn extend_ttl_rejects_cancelled_sessions() {
     let resource_hash = BytesN::from_array(&env, &[27; 32]);
 
     env.as_contract(&contract_id, || {
-        storage::write_session(
+        let _ = storage::write_session(
             &env,
             &Session {
                 id: session_id.clone(),
@@ -4870,7 +4331,8 @@ fn extend_ttl_rejects_cancelled_sessions() {
                 resource_scheme_version: 1,
                 usage_scheme_version: None,
             },
-        );
+        )
+        .unwrap();
     });
 
     assert_eq!(
@@ -4892,7 +4354,7 @@ fn extend_ttl_rejects_settled_sessions() {
     let usage_hash = BytesN::from_array(&env, &[30; 32]);
 
     env.as_contract(&contract_id, || {
-        storage::write_session(
+        let _ = storage::write_session(
             &env,
             &Session {
                 id: session_id.clone(),
@@ -4911,7 +4373,8 @@ fn extend_ttl_rejects_settled_sessions() {
                 resource_scheme_version: 1,
                 usage_scheme_version: Some(1),
             },
-        );
+        )
+        .unwrap();
     });
 
     assert_eq!(
@@ -4959,13 +4422,7 @@ fn recoverability_query_matches_recover_expired_boundary_and_terminal_states() {
         &200,
         &50,
         &resource_hash,
-        &BytesN::from_array(
-            &env,
-            &[
-                0, 96, 0xab, 0xcd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 1,
-            ],
-        ),
+        &next_idempotency_key(&env),
     );
     env.ledger().set_sequence_number(49);
     let before = client.get_recoverability(&open_id);
@@ -5001,13 +4458,7 @@ fn recoverability_query_matches_recover_expired_boundary_and_terminal_states() {
         &200,
         &60,
         &resource_hash,
-        &BytesN::from_array(
-            &env,
-            &[
-                0, 97, 0xab, 0xcd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 1,
-            ],
-        ),
+        &next_idempotency_key(&env),
     );
     client.settle(&settled, &100, &usage_hash);
     assert_eq!(
@@ -5021,13 +4472,7 @@ fn recoverability_query_matches_recover_expired_boundary_and_terminal_states() {
         &200,
         &60,
         &resource_hash,
-        &BytesN::from_array(
-            &env,
-            &[
-                0, 98, 0xab, 0xcd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 1,
-            ],
-        ),
+        &next_idempotency_key(&env),
     );
     client.cancel(&cancelled);
     assert_eq!(
@@ -5041,13 +4486,7 @@ fn recoverability_query_matches_recover_expired_boundary_and_terminal_states() {
         &200,
         &60,
         &resource_hash,
-        &BytesN::from_array(
-            &env,
-            &[
-                0, 99, 0xab, 0xcd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 1,
-            ],
-        ),
+        &next_idempotency_key(&env),
     );
     client.reject(&rejected);
     let rej = client.get_recoverability(&rejected);
@@ -5086,14 +4525,30 @@ fn solvency_query_reports_ordered_mixed_health_with_defined_edge_cases() {
     );
     let hash = BytesN::from_array(&env, &[97; 32]);
     let key = BytesN::from_array(&env, &[98; 32]);
-    client.create_session(&buyer, &seller, &healthy, &100, &50, &hash, &key);
-    client.create_session(&buyer, &seller, &surplus, &100, &50, &hash, &key);
+    client.create_session(
+        &buyer,
+        &seller,
+        &healthy,
+        &100,
+        &50,
+        &hash,
+        &next_idempotency_key(&env),
+    );
+    client.create_session(
+        &buyer,
+        &seller,
+        &surplus,
+        &100,
+        &50,
+        &hash,
+        &next_idempotency_key(&env),
+    );
     client.create_session(&buyer, &seller, &underfunded, &100, &50, &hash, &key);
     token::StellarAssetClient::new(&env, &surplus).mint(&contract_id, &40);
     env.as_contract(&contract_id, || {
         storage::increase_liability(&env, &underfunded, 25).unwrap();
     });
-    client.deprecate_asset(&deprecated, &BytesN::from_array(&env, &[0x5a; 32]));
+    client.deprecate_asset(&deprecated, &BytesN::from_array(&env, &[9; 32]));
 
     let query = soroban_sdk::vec![
         &env,
@@ -5203,13 +4658,7 @@ fn per_asset_minimum_enforces_boundaries_and_policy_invariants() {
             &9,
             &50,
             &hash(90),
-            &BytesN::from_array(
-                &env,
-                &[
-                    0, 100, 0xab, 0xcd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                    0, 0, 0, 0, 0, 0, 0, 1
-                ]
-            )
+            &next_idempotency_key(&env)
         ),
         Err(Ok(ContractError::InvalidAmount))
     );
@@ -5221,13 +4670,7 @@ fn per_asset_minimum_enforces_boundaries_and_policy_invariants() {
             &101,
             &50,
             &hash(91),
-            &BytesN::from_array(
-                &env,
-                &[
-                    0, 101, 0xab, 0xcd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                    0, 0, 0, 0, 0, 0, 0, 1
-                ]
-            )
+            &next_idempotency_key(&env)
         ),
         Err(Ok(ContractError::AmountExceedsCap))
     );
@@ -5240,13 +4683,7 @@ fn per_asset_minimum_enforces_boundaries_and_policy_invariants() {
             &10,
             &50,
             &hash(92),
-            &BytesN::from_array(
-                &env,
-                &[
-                    0, 102, 0xab, 0xcd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                    0, 0, 0, 0, 0, 0, 0, 1
-                ]
-            )
+            &next_idempotency_key(&env)
         ),
         Err(Ok(ContractError::InvalidAmount))
     );
@@ -5257,13 +4694,7 @@ fn per_asset_minimum_enforces_boundaries_and_policy_invariants() {
         &10,
         &50,
         &hash(93),
-        &BytesN::from_array(
-            &env,
-            &[
-                0, 103, 0xab, 0xcd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 1,
-            ],
-        ),
+        &next_idempotency_key(&env),
     );
     let at_max = client.create_session(
         &buyer,
@@ -5272,13 +4703,7 @@ fn per_asset_minimum_enforces_boundaries_and_policy_invariants() {
         &100,
         &50,
         &hash(94),
-        &BytesN::from_array(
-            &env,
-            &[
-                0, 104, 0xab, 0xcd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 1,
-            ],
-        ),
+        &next_idempotency_key(&env),
     );
 
     // The cap cannot be moved below the minimum; a valid update leaves sessions intact.
@@ -5322,13 +4747,7 @@ fn seller_exposure_ceiling_enforces_limits_and_releases_exposure() {
         &1_000,
         &100,
         &resource_hash,
-        &BytesN::from_array(
-            &env,
-            &[
-                0, 105, 0xab, 0xcd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 1,
-            ],
-        ),
+        &next_idempotency_key(&env),
     );
     assert_eq!(client.get_seller_exposure(&seller, &asset), 1_000);
 
@@ -5340,13 +4759,7 @@ fn seller_exposure_ceiling_enforces_limits_and_releases_exposure() {
         &600,
         &100,
         &resource_hash,
-        &BytesN::from_array(
-            &env,
-            &[
-                0, 106, 0xab, 0xcd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 1,
-            ],
-        ),
+        &next_idempotency_key(&env),
     );
     assert_eq!(err, Err(Ok(ContractError::SellerExposureCeilingExceeded)));
     assert_eq!(client.get_seller_exposure(&seller, &asset), 1_000);
@@ -5359,13 +4772,7 @@ fn seller_exposure_ceiling_enforces_limits_and_releases_exposure() {
         &500,
         &100,
         &resource_hash,
-        &BytesN::from_array(
-            &env,
-            &[
-                0, 107, 0xab, 0xcd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 1,
-            ],
-        ),
+        &next_idempotency_key(&env),
     );
     assert_eq!(client.get_seller_exposure(&seller, &asset), 1_500);
 
@@ -5385,13 +4792,7 @@ fn seller_exposure_ceiling_enforces_limits_and_releases_exposure() {
         &700,
         &50,
         &resource_hash,
-        &BytesN::from_array(
-            &env,
-            &[
-                0, 108, 0xab, 0xcd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 1,
-            ],
-        ),
+        &next_idempotency_key(&env),
     );
     assert_eq!(client.get_seller_exposure(&seller, &asset), 700);
     env.ledger().set_sequence_number(55);
@@ -5432,13 +4833,7 @@ fn buyer_open_session_limits_enforces_boundaries_and_maintains_isolation() {
         &100,
         &100,
         &resource_hash,
-        &BytesN::from_array(
-            &env,
-            &[
-                0, 109, 0xab, 0xcd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 1,
-            ],
-        ),
+        &next_idempotency_key(&env),
     );
     assert_eq!(client.get_buyer_open_sessions(&buyer_1), 1);
     assert_eq!(client.get_buyer_open_sessions(&buyer_2), 0);
@@ -5451,13 +4846,7 @@ fn buyer_open_session_limits_enforces_boundaries_and_maintains_isolation() {
         &100,
         &100,
         &resource_hash,
-        &BytesN::from_array(
-            &env,
-            &[
-                0, 110, 0xab, 0xcd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 1,
-            ],
-        ),
+        &next_idempotency_key(&env),
     );
     assert_eq!(client.get_buyer_open_sessions(&buyer_1), 2);
 
@@ -5469,13 +4858,7 @@ fn buyer_open_session_limits_enforces_boundaries_and_maintains_isolation() {
         &100,
         &100,
         &resource_hash,
-        &BytesN::from_array(
-            &env,
-            &[
-                0, 111, 0xab, 0xcd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 1,
-            ],
-        ),
+        &next_idempotency_key(&env),
     );
     assert_eq!(err, Err(Ok(ContractError::BuyerOpenSessionsExceeded)));
     assert_eq!(client.get_buyer_open_sessions(&buyer_1), 2);
@@ -5488,13 +4871,7 @@ fn buyer_open_session_limits_enforces_boundaries_and_maintains_isolation() {
         &100,
         &100,
         &resource_hash,
-        &BytesN::from_array(
-            &env,
-            &[
-                0, 112, 0xab, 0xcd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 1,
-            ],
-        ),
+        &next_idempotency_key(&env),
     );
     assert_eq!(client.get_buyer_open_sessions(&buyer_2), 1);
     assert_eq!(client.get_buyer_open_sessions(&buyer_1), 2);
@@ -5511,13 +4888,7 @@ fn buyer_open_session_limits_enforces_boundaries_and_maintains_isolation() {
         &100,
         &100,
         &resource_hash,
-        &BytesN::from_array(
-            &env,
-            &[
-                0, 113, 0xab, 0xcd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 1,
-            ],
-        ),
+        &next_idempotency_key(&env),
     );
     assert_eq!(client.get_buyer_open_sessions(&buyer_1), 2);
 
@@ -5568,13 +4939,7 @@ fn seller_open_session_limits_enforces_boundaries_and_maintains_isolation() {
         &100,
         &100,
         &resource_hash,
-        &BytesN::from_array(
-            &env,
-            &[
-                0, 114, 0xab, 0xcd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 1,
-            ],
-        ),
+        &next_idempotency_key(&env),
     );
     assert_eq!(client.get_seller_open_sessions(&seller_1), 1);
     assert_eq!(client.get_seller_open_sessions(&seller_2), 0);
@@ -5587,13 +4952,7 @@ fn seller_open_session_limits_enforces_boundaries_and_maintains_isolation() {
         &100,
         &100,
         &resource_hash,
-        &BytesN::from_array(
-            &env,
-            &[
-                0, 115, 0xab, 0xcd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 1,
-            ],
-        ),
+        &next_idempotency_key(&env),
     );
     assert_eq!(client.get_seller_open_sessions(&seller_1), 2);
 
@@ -5605,13 +4964,7 @@ fn seller_open_session_limits_enforces_boundaries_and_maintains_isolation() {
         &100,
         &100,
         &resource_hash,
-        &BytesN::from_array(
-            &env,
-            &[
-                0, 116, 0xab, 0xcd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 1,
-            ],
-        ),
+        &next_idempotency_key(&env),
     );
     assert_eq!(err, Err(Ok(ContractError::SellerOpenSessionsExceeded)));
     assert_eq!(client.get_seller_open_sessions(&seller_1), 2);
@@ -5624,13 +4977,7 @@ fn seller_open_session_limits_enforces_boundaries_and_maintains_isolation() {
         &100,
         &100,
         &resource_hash,
-        &BytesN::from_array(
-            &env,
-            &[
-                0, 117, 0xab, 0xcd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 1,
-            ],
-        ),
+        &next_idempotency_key(&env),
     );
     assert_eq!(client.get_seller_open_sessions(&seller_2), 1);
     assert_eq!(client.get_seller_open_sessions(&seller_1), 2);
@@ -5647,13 +4994,7 @@ fn seller_open_session_limits_enforces_boundaries_and_maintains_isolation() {
         &100,
         &100,
         &resource_hash,
-        &BytesN::from_array(
-            &env,
-            &[
-                0, 118, 0xab, 0xcd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 1,
-            ],
-        ),
+        &next_idempotency_key(&env),
     );
     assert_eq!(client.get_seller_open_sessions(&seller_1), 2);
 
@@ -5699,13 +5040,7 @@ fn reduce_session_cap_lowers_cap_refunds_buyer_and_reduces_liability() {
         &1_000,
         &100,
         &resource_hash,
-        &BytesN::from_array(
-            &env,
-            &[
-                0, 119, 0xab, 0xcd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 1,
-            ],
-        ),
+        &next_idempotency_key(&env),
     );
     assert_eq!(token.balance(&buyer), 9_000);
     assert_eq!(client.get_escrow_liability(&asset), 1_000);
@@ -5722,11 +5057,12 @@ fn reduce_session_cap_lowers_cap_refunds_buyer_and_reduces_liability() {
     assert_eq!(err_zero, Err(Ok(ContractError::InvalidCapReduction)));
 
     // Valid reduction from 1,000 to 600
-    // Refunds 400 to buyer, reduces liability and seller exposure to 600
+    // Refunds 400 to buyer, reduces liability, seller exposure, and buyer exposure to 600
     client.reduce_session_cap(&session_id, &600);
     assert_eq!(token.balance(&buyer), 9_400);
     assert_eq!(client.get_escrow_liability(&asset), 600);
     assert_eq!(client.get_seller_exposure(&seller, &asset), 600);
+    assert_eq!(client.get_buyer_exposure(&buyer, &asset), 600);
 
     let session = client.get_session(&session_id);
     assert_eq!(session.max_amount, 600);
@@ -5740,6 +5076,7 @@ fn reduce_session_cap_lowers_cap_refunds_buyer_and_reduces_liability() {
     assert_eq!(token.balance(&buyer), 9_600);
     assert_eq!(client.get_escrow_liability(&asset), 400);
     assert_eq!(client.get_seller_exposure(&seller, &asset), 400);
+    assert_eq!(client.get_buyer_exposure(&buyer, &asset), 400);
 
     // Settle with actual amount 350 <= 400
     client.settle(&session_id, &350, &usage_hash);
@@ -5747,6 +5084,7 @@ fn reduce_session_cap_lowers_cap_refunds_buyer_and_reduces_liability() {
     assert_eq!(token.balance(&buyer), 9_650); // 9,600 + 50 refund
     assert_eq!(client.get_escrow_liability(&asset), 0);
     assert_eq!(client.get_seller_exposure(&seller, &asset), 0);
+    assert_eq!(client.get_buyer_exposure(&buyer, &asset), 0);
 
     // Terminal session (Settled) reduction must fail
     let err_settled = client.try_reduce_session_cap(&session_id, &200);
@@ -5760,13 +5098,7 @@ fn reduce_session_cap_lowers_cap_refunds_buyer_and_reduces_liability() {
         &500,
         &50,
         &resource_hash,
-        &BytesN::from_array(
-            &env,
-            &[
-                0, 120, 0xab, 0xcd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 1,
-            ],
-        ),
+        &next_idempotency_key(&env),
     );
     env.ledger().set_sequence_number(55);
     let err_expired = client.try_reduce_session_cap(&s2_id, &300);
@@ -5852,13 +5184,7 @@ fn creation_pause_requires_admin_and_fails_closed_before_transfer() {
             &100,
             &50,
             &resource_hash,
-            &BytesN::from_array(
-                &env,
-                &[
-                    0, 121, 0xab, 0xcd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                    0, 0, 0, 0, 0, 0, 0, 1
-                ]
-            )
+            &next_idempotency_key(&env)
         ),
         Err(Ok(ContractError::CreationPaused))
     );
@@ -5870,7 +5196,7 @@ fn creation_pause_requires_admin_and_fails_closed_before_transfer() {
 }
 
 #[test]
-fn creation_pause_rejects_repeated_calls_and_resume_restores_creation() {
+fn solvency_query_reports_ordered_mixed_health_with_defined_edge_cases() {
     let env = Env::default();
     env.mock_all_auths_allowing_non_root_auth();
     let contract_id = env.register(UptoSessionContract, ());
@@ -5915,13 +5241,7 @@ fn creation_pause_rejects_repeated_calls_and_resume_restores_creation() {
             &100,
             &50,
             &resource_hash,
-            &BytesN::from_array(
-                &env,
-                &[
-                    0, 122, 0xab, 0xcd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                    0, 0, 0, 0, 0, 0, 0, 1
-                ]
-            )
+            &next_idempotency_key(&env)
         ),
         Err(Ok(ContractError::CreationPaused))
     );
@@ -5952,13 +5272,7 @@ fn creation_pause_rejects_repeated_calls_and_resume_restores_creation() {
         &100,
         &50,
         &resource_hash,
-        &BytesN::from_array(
-            &env,
-            &[
-                0, 123, 0xab, 0xcd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 1,
-            ],
-        ),
+        &next_idempotency_key(&env),
     );
     assert_eq!(client.get_session(&session_id).status, SessionStatus::Open);
 }
@@ -5984,13 +5298,7 @@ fn paused_creation_preserves_all_exit_paths() {
         &500,
         &100,
         &resource_hash,
-        &BytesN::from_array(
-            &env,
-            &[
-                0, 124, 0xab, 0xcd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 1,
-            ],
-        ),
+        &next_idempotency_key(&env),
     );
     let to_cancel = client.create_session(
         &buyer,
@@ -5999,13 +5307,7 @@ fn paused_creation_preserves_all_exit_paths() {
         &500,
         &100,
         &resource_hash,
-        &BytesN::from_array(
-            &env,
-            &[
-                0, 125, 0xab, 0xcd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 1,
-            ],
-        ),
+        &next_idempotency_key(&env),
     );
     let to_extend = client.create_session(
         &buyer,
@@ -6014,13 +5316,7 @@ fn paused_creation_preserves_all_exit_paths() {
         &500,
         &100,
         &resource_hash,
-        &BytesN::from_array(
-            &env,
-            &[
-                0, 126, 0xab, 0xcd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 1,
-            ],
-        ),
+        &next_idempotency_key(&env),
     );
     let to_recover = client.create_session(
         &buyer,
@@ -6029,13 +5325,7 @@ fn paused_creation_preserves_all_exit_paths() {
         &500,
         &100,
         &resource_hash,
-        &BytesN::from_array(
-            &env,
-            &[
-                0, 127, 0xab, 0xcd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 1,
-            ],
-        ),
+        &next_idempotency_key(&env),
     );
 
     client.pause_creation();
@@ -6338,4 +5628,262 @@ fn lifecycle_events_expose_indexable_topics_and_versions() {
         events::publish_creation_resumed(&env, &admin)
     });
     assert_indexable_event(&env, &contract_id, "creation_resumed", false, 3);
+}
+
+#[test]
+fn session_idempotency_exact_replay_and_conflict_rejection() {
+    let env = Env::default();
+    env.mock_all_auths_allowing_non_root_auth();
+    let contract_id = env.register(UptoSessionContract, ());
+    let client = UptoSessionContractClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let buyer = Address::generate(&env);
+    let seller_a = Address::generate(&env);
+    let seller_b = Address::generate(&env);
+    let asset = create_test_asset(&env, &buyer, 1_000);
+    let token_client = token::Client::new(&env, &asset);
+    initialize_for_asset(&env, &client, &admin, &asset);
+
+    let idempotency_key = BytesN::from_array(&env, &[99; 32]);
+    let resource_hash = BytesN::from_array(&env, &[1; 32]);
+
+    // Initial creation succeeds
+    let session_id_1 = client.create_session(
+        &buyer,
+        &seller_a,
+        &asset,
+        &300,
+        &50,
+        &resource_hash,
+        &idempotency_key,
+    );
+    assert_eq!(token_client.balance(&contract_id), 300);
+    assert_eq!(token_client.balance(&buyer), 700);
+    assert_eq!(client.get_escrow_liability(&asset), 300);
+    env.as_contract(&contract_id, || {
+        assert_eq!(storage::read_next_session_sequence(&env), 1);
+    });
+
+    // Exact retry: identical parameters -> returns original session ID without moving funds or advancing sequence
+    let session_id_retry = client.create_session(
+        &buyer,
+        &seller_a,
+        &asset,
+        &300,
+        &50,
+        &resource_hash,
+        &idempotency_key,
+    );
+    assert_eq!(session_id_1, session_id_retry);
+    assert_eq!(token_client.balance(&contract_id), 300);
+    assert_eq!(token_client.balance(&buyer), 700);
+    assert_eq!(client.get_escrow_liability(&asset), 300);
+    env.as_contract(&contract_id, || {
+        assert_eq!(storage::read_next_session_sequence(&env), 1);
+    });
+
+    // Conflicting reuse: different seller fails with IdempotencyConflict
+    assert_eq!(
+        client.try_create_session(
+            &buyer,
+            &seller_b,
+            &asset,
+            &300,
+            &50,
+            &resource_hash,
+            &idempotency_key,
+        ),
+        Err(Ok(ContractError::IdempotencyConflict))
+    );
+
+    // Conflicting reuse: different max_amount fails with IdempotencyConflict
+    assert_eq!(
+        client.try_create_session(
+            &buyer,
+            &seller_a,
+            &asset,
+            &250,
+            &50,
+            &resource_hash,
+            &idempotency_key,
+        ),
+        Err(Ok(ContractError::IdempotencyConflict))
+    );
+
+    // Conflicting reuse: different expiry fails with IdempotencyConflict
+    assert_eq!(
+        client.try_create_session(
+            &buyer,
+            &seller_a,
+            &asset,
+            &300,
+            &60,
+            &resource_hash,
+            &idempotency_key,
+        ),
+        Err(Ok(ContractError::IdempotencyConflict))
+    );
+
+    // Conflicting reuse: different resource_hash fails with IdempotencyConflict
+    let diff_resource_hash = BytesN::from_array(&env, &[2; 32]);
+    assert_eq!(
+        client.try_create_session(
+            &buyer,
+            &seller_a,
+            &asset,
+            &300,
+            &50,
+            &diff_resource_hash,
+            &idempotency_key,
+        ),
+        Err(Ok(ContractError::IdempotencyConflict))
+    );
+
+    // Scoped per buyer: Another buyer using the SAME idempotency key succeeds independently
+    let buyer_2 = Address::generate(&env);
+    token_client.transfer(&buyer, &buyer_2, &200);
+    let session_id_buyer2 = client.create_session(
+        &buyer_2,
+        &seller_a,
+        &asset,
+        &200,
+        &50,
+        &resource_hash,
+        &idempotency_key,
+    );
+    assert_ne!(session_id_1, session_id_buyer2);
+    assert_eq!(token_client.balance(&contract_id), 500);
+    env.as_contract(&contract_id, || {
+        assert_eq!(storage::read_next_session_sequence(&env), 2);
+    });
+}
+
+#[test]
+fn session_sequence_exhaustion_rejects_before_state_mutation() {
+    let env = Env::default();
+    env.mock_all_auths_allowing_non_root_auth();
+    let contract_id = env.register(UptoSessionContract, ());
+    let client = UptoSessionContractClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let buyer = Address::generate(&env);
+    let seller = Address::generate(&env);
+    let asset = create_test_asset(&env, &buyer, 500);
+    let token_client = token::Client::new(&env, &asset);
+    initialize_for_asset(&env, &client, &admin, &asset);
+
+    // Set sequence at terminal exhaustion threshold
+    env.as_contract(&contract_id, || {
+        env.storage()
+            .instance()
+            .set(&storage::DataKey::NextSessionSequence, &u64::MAX);
+    });
+
+    let resource_hash = BytesN::from_array(&env, &[1; 32]);
+    let idempotency_key = next_idempotency_key(&env);
+
+    // Creation must return SequenceExhausted without trapping or moving funds
+    let result = client.try_create_session(
+        &buyer,
+        &seller,
+        &asset,
+        &100,
+        &50,
+        &resource_hash,
+        &idempotency_key,
+    );
+    assert_eq!(result, Err(Ok(ContractError::SequenceExhausted)));
+
+    // Verify all balances and storage remain unchanged
+    assert_eq!(token_client.balance(&buyer), 500);
+    assert_eq!(token_client.balance(&contract_id), 0);
+    env.as_contract(&contract_id, || {
+        assert_eq!(storage::read_next_session_sequence(&env), u64::MAX);
+        assert_eq!(storage::read_liability(&env, &asset), 0);
+        assert!(!storage::has_idempotency_key(
+            &env,
+            &buyer,
+            &idempotency_key
+        ));
+    });
+}
+
+#[test]
+fn max_session_duration_policy_client_methods_and_near_limit_ledgers() {
+    let env = Env::default();
+    env.mock_all_auths_allowing_non_root_auth();
+    let contract_id = env.register(UptoSessionContract, ());
+    let client = UptoSessionContractClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let asset = create_test_asset(&env, &admin, 100);
+    initialize_for_asset(&env, &client, &admin, &asset);
+
+    // Explicit client method returns MAX_SESSION_DURATION_LEDGERS
+    assert_eq!(
+        client.max_session_duration_ledgers(),
+        validation::MAX_SESSION_DURATION_LEDGERS
+    );
+    assert_eq!(
+        client.get_configuration().max_session_duration_ledgers,
+        validation::MAX_SESSION_DURATION_LEDGERS
+    );
+
+    // Test creation validation on boundary
+    let buyer = Address::generate(&env);
+    let seller = Address::generate(&env);
+    let token_client = token::Client::new(&env, &asset);
+    token_client.transfer(&admin, &buyer, &100);
+    let resource_hash = BytesN::from_array(&env, &[7; 32]);
+
+    let current_ledger = 100_000;
+    env.ledger().set_sequence_number(current_ledger);
+
+    // Exact boundary succeeds
+    let boundary_expiry = current_ledger + validation::MAX_SESSION_DURATION_LEDGERS;
+    let s_id = client.create_session(
+        &buyer,
+        &seller,
+        &asset,
+        &10,
+        &boundary_expiry,
+        &resource_hash,
+        &next_idempotency_key(&env),
+    );
+    assert_eq!(client.get_session(&s_id).expires_at_ledger, boundary_expiry);
+
+    // Boundary + 1 fails with SessionDurationTooLong before transfer or sequence advancement
+    let beyond_boundary_expiry = boundary_expiry + 1;
+    let seq_before = env.as_contract(&contract_id, || storage::read_next_session_sequence(&env));
+    let buyer_bal_before = token_client.balance(&buyer);
+    assert_eq!(
+        client.try_create_session(
+            &buyer,
+            &seller,
+            &asset,
+            &10,
+            &beyond_boundary_expiry,
+            &resource_hash,
+            &next_idempotency_key(&env),
+        ),
+        Err(Ok(ContractError::SessionDurationTooLong))
+    );
+    assert_eq!(token_client.balance(&buyer), buyer_bal_before);
+    env.as_contract(&contract_id, || {
+        assert_eq!(storage::read_next_session_sequence(&env), seq_before);
+    });
+
+    // Near-u32-limit ledgers test overflow safety
+    // Ledger at 10 with u32::MAX expiry rejects without overflow
+    env.ledger().set_sequence_number(10);
+    assert_eq!(
+        client.try_create_session(
+            &buyer,
+            &seller,
+            &asset,
+            &10,
+            &u32::MAX,
+            &resource_hash,
+            &next_idempotency_key(&env),
+        ),
+        Err(Ok(ContractError::SessionDurationTooLong))
+    );
 }
