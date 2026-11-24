@@ -182,6 +182,7 @@ fn mutation_buyer_auth_removal_in_create_session_is_caught() {
     let asset = stellar_asset(&env, &buyer, 500);
     let (contract, client) = initialized_contract(&env, &buyer, &asset, 500);
     let resource_hash = BytesN::from_array(&env, &[0xa1; 32]);
+    let idempotency_key = BytesN::from_array(&env, &[0xa1; 32]);
 
     // No mock_auths — the contract must enforce buyer.require_auth() itself.
     let idempotency_key = super::unique_idempotency_key(&env);
@@ -231,6 +232,7 @@ fn mutation_buyer_auth_wrong_party_in_create_session_is_caught() {
     let asset = stellar_asset(&env, &buyer, 500);
     let (contract, client) = initialized_contract(&env, &buyer, &asset, 500);
     let resource_hash = BytesN::from_array(&env, &[0xa2; 32]);
+    let idempotency_key = BytesN::from_array(&env, &[0xa2; 32]);
 
     let idempotency_key = BytesN::from_array(&env, &[0xb1; 32]);
 
@@ -527,6 +529,7 @@ fn mutation_asset_cap_inversion_in_create_session_is_caught() {
     let cap: i128 = 250;
     let (contract, client) = initialized_contract(&env, &buyer, &asset, cap);
     let resource_hash = BytesN::from_array(&env, &[0xd1; 32]);
+    let idempotency_key = BytesN::from_array(&env, &[0xd1; 32]);
 
     // Attempt exactly cap + 1.
     let result = client.try_create_session(
@@ -1159,6 +1162,7 @@ fn mutation_end_to_end_auth_and_cap_guards_are_all_present() {
     let (contract, client) = initialized_contract(&env, &buyer, &asset, cap);
     let resource_hash = BytesN::from_array(&env, &[0xaa; 32]);
     let usage_hash = BytesN::from_array(&env, &[0xab; 32]);
+    let idempotency_key = BytesN::from_array(&env, &[0xac; 32]);
 
     // 1. Cap check fires before buyer auth (no auth needed to see the error).
     assert_eq!(

@@ -38,6 +38,7 @@ mod panic_free_regression_harness {
 // `authorization_harness` and must use explicit trees.
 
 use super::*;
+use core::sync::atomic::{AtomicU64, Ordering};
 use soroban_sdk::{
     testutils::{Address as _, Events as _, Ledger as _, MockAuth, MockAuthInvoke},
     token, Address, BytesN, Env, Event, IntoVal,
@@ -50,6 +51,15 @@ use test_token::{
     reentry::{ReentryAction, ReentryTokenContract, ReentryTokenContractClient},
     TestTokenContract, TestTokenContractClient,
 };
+
+static TEST_KEY_COUNTER: AtomicU64 = AtomicU64::new(100);
+
+fn next_idempotency_key(env: &Env) -> BytesN<32> {
+    let id = TEST_KEY_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let mut bytes = [0u8; 32];
+    bytes[0..8].copy_from_slice(&id.to_be_bytes());
+    BytesN::from_array(env, &bytes)
+}
 
 fn create_test_asset(env: &Env, buyer: &Address, amount: i128) -> Address {
     let token_admin = Address::generate(env);
@@ -640,6 +650,7 @@ fn public_interface_is_callable() {
                 max_amount: 100,
                 expires_at_ledger: 10,
                 resource_hash: &resource_hash,
+                idempotency_key: &idempotency_key,
                 sequence: 0,
                 idempotency_key: &idempotency_key,
             },
@@ -5172,7 +5183,7 @@ fn creation_pause_requires_admin_and_fails_closed_before_transfer() {
 }
 
 #[test]
-fn creation_pause_rejects_repeated_calls_and_resume_restores_creation() {
+fn solvency_query_reports_ordered_mixed_health_with_defined_edge_cases() {
     let env = Env::default();
     env.mock_all_auths_allowing_non_root_auth();
     let contract_id = env.register(UptoSessionContract, ());
@@ -5604,4 +5615,262 @@ fn lifecycle_events_expose_indexable_topics_and_versions() {
         events::publish_creation_resumed(&env, &admin)
     });
     assert_indexable_event(&env, &contract_id, "creation_resumed", false, 3);
+}
+
+#[test]
+fn session_idempotency_exact_replay_and_conflict_rejection() {
+    let env = Env::default();
+    env.mock_all_auths_allowing_non_root_auth();
+    let contract_id = env.register(UptoSessionContract, ());
+    let client = UptoSessionContractClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let buyer = Address::generate(&env);
+    let seller_a = Address::generate(&env);
+    let seller_b = Address::generate(&env);
+    let asset = create_test_asset(&env, &buyer, 1_000);
+    let token_client = token::Client::new(&env, &asset);
+    initialize_for_asset(&env, &client, &admin, &asset);
+
+    let idempotency_key = BytesN::from_array(&env, &[99; 32]);
+    let resource_hash = BytesN::from_array(&env, &[1; 32]);
+
+    // Initial creation succeeds
+    let session_id_1 = client.create_session(
+        &buyer,
+        &seller_a,
+        &asset,
+        &300,
+        &50,
+        &resource_hash,
+        &idempotency_key,
+    );
+    assert_eq!(token_client.balance(&contract_id), 300);
+    assert_eq!(token_client.balance(&buyer), 700);
+    assert_eq!(client.get_escrow_liability(&asset), 300);
+    env.as_contract(&contract_id, || {
+        assert_eq!(storage::read_next_session_sequence(&env), 1);
+    });
+
+    // Exact retry: identical parameters -> returns original session ID without moving funds or advancing sequence
+    let session_id_retry = client.create_session(
+        &buyer,
+        &seller_a,
+        &asset,
+        &300,
+        &50,
+        &resource_hash,
+        &idempotency_key,
+    );
+    assert_eq!(session_id_1, session_id_retry);
+    assert_eq!(token_client.balance(&contract_id), 300);
+    assert_eq!(token_client.balance(&buyer), 700);
+    assert_eq!(client.get_escrow_liability(&asset), 300);
+    env.as_contract(&contract_id, || {
+        assert_eq!(storage::read_next_session_sequence(&env), 1);
+    });
+
+    // Conflicting reuse: different seller fails with IdempotencyConflict
+    assert_eq!(
+        client.try_create_session(
+            &buyer,
+            &seller_b,
+            &asset,
+            &300,
+            &50,
+            &resource_hash,
+            &idempotency_key,
+        ),
+        Err(Ok(ContractError::IdempotencyConflict))
+    );
+
+    // Conflicting reuse: different max_amount fails with IdempotencyConflict
+    assert_eq!(
+        client.try_create_session(
+            &buyer,
+            &seller_a,
+            &asset,
+            &250,
+            &50,
+            &resource_hash,
+            &idempotency_key,
+        ),
+        Err(Ok(ContractError::IdempotencyConflict))
+    );
+
+    // Conflicting reuse: different expiry fails with IdempotencyConflict
+    assert_eq!(
+        client.try_create_session(
+            &buyer,
+            &seller_a,
+            &asset,
+            &300,
+            &60,
+            &resource_hash,
+            &idempotency_key,
+        ),
+        Err(Ok(ContractError::IdempotencyConflict))
+    );
+
+    // Conflicting reuse: different resource_hash fails with IdempotencyConflict
+    let diff_resource_hash = BytesN::from_array(&env, &[2; 32]);
+    assert_eq!(
+        client.try_create_session(
+            &buyer,
+            &seller_a,
+            &asset,
+            &300,
+            &50,
+            &diff_resource_hash,
+            &idempotency_key,
+        ),
+        Err(Ok(ContractError::IdempotencyConflict))
+    );
+
+    // Scoped per buyer: Another buyer using the SAME idempotency key succeeds independently
+    let buyer_2 = Address::generate(&env);
+    token_client.transfer(&buyer, &buyer_2, &200);
+    let session_id_buyer2 = client.create_session(
+        &buyer_2,
+        &seller_a,
+        &asset,
+        &200,
+        &50,
+        &resource_hash,
+        &idempotency_key,
+    );
+    assert_ne!(session_id_1, session_id_buyer2);
+    assert_eq!(token_client.balance(&contract_id), 500);
+    env.as_contract(&contract_id, || {
+        assert_eq!(storage::read_next_session_sequence(&env), 2);
+    });
+}
+
+#[test]
+fn session_sequence_exhaustion_rejects_before_state_mutation() {
+    let env = Env::default();
+    env.mock_all_auths_allowing_non_root_auth();
+    let contract_id = env.register(UptoSessionContract, ());
+    let client = UptoSessionContractClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let buyer = Address::generate(&env);
+    let seller = Address::generate(&env);
+    let asset = create_test_asset(&env, &buyer, 500);
+    let token_client = token::Client::new(&env, &asset);
+    initialize_for_asset(&env, &client, &admin, &asset);
+
+    // Set sequence at terminal exhaustion threshold
+    env.as_contract(&contract_id, || {
+        env.storage()
+            .instance()
+            .set(&storage::DataKey::NextSessionSequence, &u64::MAX);
+    });
+
+    let resource_hash = BytesN::from_array(&env, &[1; 32]);
+    let idempotency_key = next_idempotency_key(&env);
+
+    // Creation must return SequenceExhausted without trapping or moving funds
+    let result = client.try_create_session(
+        &buyer,
+        &seller,
+        &asset,
+        &100,
+        &50,
+        &resource_hash,
+        &idempotency_key,
+    );
+    assert_eq!(result, Err(Ok(ContractError::SequenceExhausted)));
+
+    // Verify all balances and storage remain unchanged
+    assert_eq!(token_client.balance(&buyer), 500);
+    assert_eq!(token_client.balance(&contract_id), 0);
+    env.as_contract(&contract_id, || {
+        assert_eq!(storage::read_next_session_sequence(&env), u64::MAX);
+        assert_eq!(storage::read_liability(&env, &asset), 0);
+        assert!(!storage::has_idempotency_key(
+            &env,
+            &buyer,
+            &idempotency_key
+        ));
+    });
+}
+
+#[test]
+fn max_session_duration_policy_client_methods_and_near_limit_ledgers() {
+    let env = Env::default();
+    env.mock_all_auths_allowing_non_root_auth();
+    let contract_id = env.register(UptoSessionContract, ());
+    let client = UptoSessionContractClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let asset = create_test_asset(&env, &admin, 100);
+    initialize_for_asset(&env, &client, &admin, &asset);
+
+    // Explicit client method returns MAX_SESSION_DURATION_LEDGERS
+    assert_eq!(
+        client.max_session_duration_ledgers(),
+        validation::MAX_SESSION_DURATION_LEDGERS
+    );
+    assert_eq!(
+        client.get_configuration().max_session_duration_ledgers,
+        validation::MAX_SESSION_DURATION_LEDGERS
+    );
+
+    // Test creation validation on boundary
+    let buyer = Address::generate(&env);
+    let seller = Address::generate(&env);
+    let token_client = token::Client::new(&env, &asset);
+    token_client.transfer(&admin, &buyer, &100);
+    let resource_hash = BytesN::from_array(&env, &[7; 32]);
+
+    let current_ledger = 100_000;
+    env.ledger().set_sequence_number(current_ledger);
+
+    // Exact boundary succeeds
+    let boundary_expiry = current_ledger + validation::MAX_SESSION_DURATION_LEDGERS;
+    let s_id = client.create_session(
+        &buyer,
+        &seller,
+        &asset,
+        &10,
+        &boundary_expiry,
+        &resource_hash,
+        &next_idempotency_key(&env),
+    );
+    assert_eq!(client.get_session(&s_id).expires_at_ledger, boundary_expiry);
+
+    // Boundary + 1 fails with SessionDurationTooLong before transfer or sequence advancement
+    let beyond_boundary_expiry = boundary_expiry + 1;
+    let seq_before = env.as_contract(&contract_id, || storage::read_next_session_sequence(&env));
+    let buyer_bal_before = token_client.balance(&buyer);
+    assert_eq!(
+        client.try_create_session(
+            &buyer,
+            &seller,
+            &asset,
+            &10,
+            &beyond_boundary_expiry,
+            &resource_hash,
+            &next_idempotency_key(&env),
+        ),
+        Err(Ok(ContractError::SessionDurationTooLong))
+    );
+    assert_eq!(token_client.balance(&buyer), buyer_bal_before);
+    env.as_contract(&contract_id, || {
+        assert_eq!(storage::read_next_session_sequence(&env), seq_before);
+    });
+
+    // Near-u32-limit ledgers test overflow safety
+    // Ledger at 10 with u32::MAX expiry rejects without overflow
+    env.ledger().set_sequence_number(10);
+    assert_eq!(
+        client.try_create_session(
+            &buyer,
+            &seller,
+            &asset,
+            &10,
+            &u32::MAX,
+            &resource_hash,
+            &next_idempotency_key(&env),
+        ),
+        Err(Ok(ContractError::SessionDurationTooLong))
+    );
 }

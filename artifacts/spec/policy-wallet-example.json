@@ -520,6 +520,27 @@
         },
         {
           "doc": "",
+          "name": "asset",
+          "type": "address"
+        }
+      ],
+      "name": "spent_today_asset",
+      "outputs": [
+        "i128"
+      ]
+    }
+  },
+  {
+    "function_v0": {
+      "doc": "",
+      "inputs": [
+        {
+          "doc": "",
+          "name": "agent",
+          "type": "address"
+        },
+        {
+          "doc": "",
           "name": "resource_hash",
           "type": {
             "bytes_n": {
@@ -777,6 +798,19 @@
           "type": {
             "vec": {
               "element_type": "address"
+            }
+          }
+        },
+        {
+          "doc": "",
+          "name": "asset_limits",
+          "type": {
+            "vec": {
+              "element_type": {
+                "udt": {
+                  "name": "AssetSpendingLimit"
+                }
+              }
             }
           }
         },

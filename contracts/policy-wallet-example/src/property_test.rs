@@ -176,9 +176,15 @@ fn build_policy(env: &Env, actors: &Actors, spec: &PolicySpec) -> SpendingPolicy
         }
     }
     let mut assets = Vec::new(env);
+    let mut asset_limits = Vec::new(env);
     for (i, asset) in actors.assets.iter().enumerate().take(ASSETS) {
         if allowed(spec.asset_mask, i) {
             assets.push_back(asset.clone());
+            asset_limits.push_back(AssetSpendingLimit {
+                asset: asset.clone(),
+                max_amount_per_payment: spec.per_payment,
+                max_amount_per_day: spec.per_day,
+            });
         }
     }
     let mut resources = Vec::new(env);
@@ -214,6 +220,7 @@ fn build_policy(env: &Env, actors: &Actors, spec: &PolicySpec) -> SpendingPolicy
         allowed_assets: assets,
         allowed_resource_hashes: resources,
         seller_limits,
+        asset_limits,
         resource_limits,
         revision: 0,
     }

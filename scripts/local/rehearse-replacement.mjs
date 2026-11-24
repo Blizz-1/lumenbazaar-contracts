@@ -18,6 +18,7 @@ import {
   switchActiveDeployment,
   validateMigrationState,
 } from "./replacement-routing.mjs";
+import { loadAndVerifyCrossVersionTraces } from "./cross-version-traces.mjs";
 
 const dryRun = hasFlag("--dry-run");
 const network = process.env.STELLAR_NETWORK || "local";
@@ -129,6 +130,8 @@ async function run() {
   deprecateDeployment(state, "old");
   validateMigrationState(state);
 
+  const differentialSummary = loadAndVerifyCrossVersionTraces(repoRoot);
+
   const output = {
     ...state,
     network,
@@ -141,6 +144,7 @@ async function run() {
       crossDeploymentLookupRejected: true,
       rollbackPreservedExistingRoutes: true,
       oldDeploymentDeprecatedForNewSessions: !state.deployments.old.acceptsNewSessions,
+      crossVersionBehavioralTracesVerified: differentialSummary.traceCount > 0,
     },
   };
 

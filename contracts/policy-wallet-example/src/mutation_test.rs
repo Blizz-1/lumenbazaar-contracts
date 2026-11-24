@@ -63,6 +63,14 @@ fn make_policy(
         allowed_assets: vec![env, asset.clone()],
         allowed_resource_hashes: vec![env, resource_hash.clone()],
         seller_limits: vec![env],
+        asset_limits: vec![
+            env,
+            AssetSpendingLimit {
+                asset: asset.clone(),
+                max_amount_per_payment: max_per_payment,
+                max_amount_per_day: max_per_day,
+            },
+        ],
         resource_limits: vec![env],
         revision: 0,
     }

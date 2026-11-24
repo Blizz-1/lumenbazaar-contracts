@@ -2036,6 +2036,43 @@
   },
   {
     "function_v0": {
+      "doc": "Read-only solvency snapshot for a caller-supplied list of one to\\n`MAX_SOLVENCY_QUERY_ASSETS` assets. Results preserve input order.\\nDuplicates are evaluated independently and returned once per\\noccurrence. Assets unknown to this deployment are reported as\\n`Unknown` with zero values and are never called, so arbitrary\\ncontracts cannot be invoked. `surplus` is `balance - liability`\\n(negative when underfunded).",
+      "inputs": [
+        {
+          "doc": "",
+          "name": "assets",
+          "type": {
+            "vec": {
+              "element_type": "address"
+            }
+          }
+        }
+      ],
+      "name": "get_solvency",
+      "outputs": [
+        {
+          "result": {
+            "error_type": {
+              "udt": {
+                "name": "ContractError"
+              }
+            },
+            "ok_type": {
+              "vec": {
+                "element_type": {
+                  "udt": {
+                    "name": "AssetSolvency"
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    }
+  },
+  {
+    "function_v0": {
       "doc": "",
       "inputs": [
         {
@@ -3823,6 +3860,7 @@
           }
         }
       ],
+      "doc": "",
       "lib": "",
       "name": "TerminalEvidenceDigest"
     }
