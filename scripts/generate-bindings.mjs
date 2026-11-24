@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { assertErrorMapMatchesFixture } from "./lib/contract-error-map.mjs";
+import { generateBindingApiReference, loadBindingApiInputs } from "./lib/binding-api-reference.mjs";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 const skipBuild = process.argv.includes("--skip-build");
@@ -65,6 +66,14 @@ copyFileSync(
   join(repoRoot, "scripts", "templates", "transactionEvidence.ts"),
   join(outputDir, "src", "transactionEvidence.ts"),
 );
+copyFileSync(
+  join(repoRoot, "scripts", "templates", "simulation.ts"),
+  join(outputDir, "src", "simulation.ts"),
+);
+copyFileSync(
+  join(repoRoot, "scripts", "templates", "clientValidation.ts"),
+  join(outputDir, "src", "clientValidation.ts"),
+);
 
 const bindingPath = join(outputDir, "src", "index.ts");
 const binding = readFileSync(bindingPath, "utf8");
@@ -104,23 +113,31 @@ const transactionEvidenceExport = 'export * from "./transactionEvidence.js";';
 if (!canonicalBinding.includes(transactionEvidenceExport)) {
   canonicalBinding = `${canonicalBinding.trimEnd()}\n${transactionEvidenceExport}\n`;
 }
+const simulationExport = 'export * from "./simulation.js";';
+if (!canonicalBinding.includes(simulationExport)) {
+  canonicalBinding = `${canonicalBinding.trimEnd()}\n${simulationExport}\n`;
+}
+const clientValidationExport = 'export * from "./clientValidation.js";';
+if (!canonicalBinding.includes(clientValidationExport)) {
+  canonicalBinding = `${canonicalBinding.trimEnd()}\n${clientValidationExport}\n`;
+}
 writeFileSync(bindingPath, canonicalBinding, "utf8");
 
-// The CLI rewrites README.md; re-append the hand-written helper documentation.
+// The CLI rewrites README.md with generic boilerplate; replace it with the
+// deterministic LumenBazaar API reference generated from the frozen spec and
+// compatibility fixtures.
 const readmePath = join(outputDir, "README.md");
-const readme = readFileSync(readmePath, "utf8");
-const evidenceReadme = readFileSync(
-  join(repoRoot, "scripts", "templates", "README.transactionEvidence.md"),
+writeFileSync(
+  readmePath,
+  generateBindingApiReference(loadBindingApiInputs(repoRoot)),
   "utf8",
 );
-if (!readme.includes("<!-- lumenbazaar:transaction-evidence")) {
-  writeFileSync(readmePath, `${readme.trimEnd()}\n\n${evidenceReadme}`, "utf8");
-}
 
 const packagePath = join(outputDir, "package.json");
 const packageJson = JSON.parse(readFileSync(packagePath, "utf8"));
 packageJson.version = "3.0.0";
 packageJson.dependencies["@stellar/stellar-sdk"] = "17.2.1";
+packageJson.scripts.prepack = "node ../../scripts/generate-binding-attestation.mjs && node ../../scripts/verify-binding-attestation.mjs";
 writeFileSync(packagePath, `${JSON.stringify(packageJson, null, 2)}\n`, "utf8");
 
 if (packageLock !== null) {

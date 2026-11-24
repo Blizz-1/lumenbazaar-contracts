@@ -29,9 +29,14 @@ fn property_config(default_cases: u32) -> ProptestConfig {
         .ok()
         .and_then(|value| value.parse().ok())
         .unwrap_or(default_cases);
+    let seed = std::env::var("LUMENBAZAAR_POLICY_SEED")
+        .ok()
+        .and_then(|value| u64::from_str_radix(value.trim_start_matches("0x"), 16).ok())
+        .unwrap_or(POLICY_SEED);
+    std::println!("policy campaign seed=0x{seed:016x} cases={cases}; replay: LUMENBAZAAR_POLICY_SEED=0x{seed:016x} LUMENBAZAAR_POLICY_CASES={cases} cargo test -p policy-wallet-example property_test -- --nocapture --test-threads=1");
     ProptestConfig {
         cases,
-        rng_seed: RngSeed::Fixed(POLICY_SEED),
+        rng_seed: RngSeed::Fixed(seed),
         max_shrink_iters: 2_000,
         ..ProptestConfig::default()
     }
@@ -171,9 +176,15 @@ fn build_policy(env: &Env, actors: &Actors, spec: &PolicySpec) -> SpendingPolicy
         }
     }
     let mut assets = Vec::new(env);
+    let mut asset_limits = Vec::new(env);
     for (i, asset) in actors.assets.iter().enumerate().take(ASSETS) {
         if allowed(spec.asset_mask, i) {
             assets.push_back(asset.clone());
+            asset_limits.push_back(AssetSpendingLimit {
+                asset: asset.clone(),
+                max_amount_per_payment: spec.per_payment,
+                max_amount_per_day: spec.per_day,
+            });
         }
     }
     let mut resources = Vec::new(env);
@@ -200,6 +211,7 @@ fn build_policy(env: &Env, actors: &Actors, spec: &PolicySpec) -> SpendingPolicy
     }
     SpendingPolicy {
         agent: actors.agent.clone(),
+        revision: 0,
         max_amount_per_payment: spec.per_payment,
         max_amount_per_day: spec.per_day,
         max_authorizations_per_day: spec.max_authorizations,
@@ -209,8 +221,9 @@ fn build_policy(env: &Env, actors: &Actors, spec: &PolicySpec) -> SpendingPolicy
         allowed_assets: assets,
         allowed_resource_hashes: resources,
         seller_limits,
+        asset_limits,
         resource_limits,
-            revision: 0,
+        revision: 0,
     }
 }
 
@@ -518,12 +531,10 @@ fn p4_day_rollover_is_pinned_at_the_boundary() {
     let env = Env::default();
     let (client, actors) = setup(&env);
     let boundary = next_day_start(START_LEDGER);
-    client.set_policy(&pinned_policy(
-        &env,
-        &actors,
-        100,
-        boundary + LEDGERS_PER_DAY,
-    ), &0);
+    client.set_policy(
+        &pinned_policy(&env, &actors, 100, boundary + LEDGERS_PER_DAY),
+        &0,
+    );
     let pay = |amount: i128| {
         defined(client.try_authorize_payment(
             &actors.agent,
@@ -694,4 +705,278 @@ fn p7_extreme_amounts_return_defined_errors() {
         Err(PolicyWalletError::AmountExceedsDailyCap)
     );
     assert_eq!(client.spent_today(&actors.agent), i128::MAX);
+}
+
+/// Invariant: Policy active-window status matches authorization enforcement and revocation precedence.
+#[test]
+fn policy_active_window_status_matches_authorization_and_revocation() {
+    let env = Env::default();
+    let (client, actors) = setup(&env);
+    let valid_from = START_LEDGER + 5;
+    let valid_until = START_LEDGER + 15;
+    let mut policy = pinned_policy(&env, &actors, 100, valid_until);
+    policy.valid_from_ledger = valid_from;
+    client.set_policy(&policy, &0);
+
+    // 1. Pending window
+    for l in START_LEDGER..valid_from {
+        env.ledger().set_sequence_number(l);
+        let status = client.get_policy_status(&actors.agent);
+        assert_eq!(status.status, PolicyStatus::Pending);
+        assert_eq!(status.next_boundary_ledger, Some(valid_from));
+        let check = defined(client.try_check_payment(
+            &actors.agent,
+            &actors.sellers[0],
+            &actors.assets[0],
+            &1,
+            &actors.resources[0],
+        ));
+        assert_eq!(check, Err(PolicyWalletError::PolicyNotActive));
+    }
+
+    // 2. Active window (inclusive at both valid_from and valid_until)
+    for l in valid_from..=valid_until {
+        env.ledger().set_sequence_number(l);
+        let status = client.get_policy_status(&actors.agent);
+        assert_eq!(status.status, PolicyStatus::Active);
+        assert_eq!(status.next_boundary_ledger, Some(valid_until + 1));
+        let check = defined(client.try_check_payment(
+            &actors.agent,
+            &actors.sellers[0],
+            &actors.assets[0],
+            &1,
+            &actors.resources[0],
+        ));
+        assert_eq!(check, Ok(()));
+    }
+
+    // 3. Expired window
+    for l in (valid_until + 1)..=(valid_until + 5) {
+        env.ledger().set_sequence_number(l);
+        let status = client.get_policy_status(&actors.agent);
+        assert_eq!(status.status, PolicyStatus::Expired);
+        assert_eq!(status.next_boundary_ledger, None);
+        let check = defined(client.try_check_payment(
+            &actors.agent,
+            &actors.sellers[0],
+            &actors.assets[0],
+            &1,
+            &actors.resources[0],
+        ));
+        assert_eq!(check, Err(PolicyWalletError::PolicyExpired));
+    }
+
+    // 4. Revocation precedence
+    env.ledger().set_sequence_number(valid_from + 1);
+    client.revoke_policy(&actors.agent);
+    for l in [START_LEDGER, valid_from, valid_from + 2, valid_until, valid_until + 10] {
+        env.ledger().set_sequence_number(l);
+        let status = client.get_policy_status(&actors.agent);
+        assert_eq!(status.status, PolicyStatus::Revoked);
+        assert_eq!(status.next_boundary_ledger, None);
+        let check = defined(client.try_check_payment(
+            &actors.agent,
+            &actors.sellers[0],
+            &actors.assets[0],
+            &1,
+            &actors.resources[0],
+        ));
+        assert_eq!(check, Err(PolicyWalletError::PolicyRevoked));
+    }
+}
+
+/// Helper strategy for generating 3 agent policies with distinct limits.
+fn three_agent_policies_strategy() -> impl Strategy<Value = [PolicySpec; 3]> {
+    (policy_strategy(), policy_strategy(), policy_strategy())
+        .prop_map(|(p1, p2, p3)| [p1, p2, p3])
+}
+
+/// Helper strategy for multi-agent interleaved action steps.
+fn multi_agent_steps_strategy() -> impl Strategy<Value = std::vec::Vec<(u8, Step)>> {
+    collection::vec((0_u8..3, (
+        0_u8..6,
+        1_u32..50,
+        0_u8..=(SELLERS as u8),
+        0_u8..=(ASSETS as u8),
+        0_u8..=(RESOURCES as u8),
+        0_u8..10,
+        any::<i128>(),
+        any::<bool>(),
+    ).prop_map(|(agent, (advance, advance_by, seller, asset, resource, amount, raw_amount, authorize))| {
+        (agent, Step { advance, advance_by, seller, asset, resource, amount, raw_amount, authorize })
+    })), 3..30)
+}
+
+proptest! {
+    #![proptest_config(property_config(POLICY_CASES))]
+
+    /// P8: Cross-agent policy isolation.
+    /// Interleaving 3 distinct agents with individual policies, tracking each agent's
+    /// isolated spend and authorization counters against separate reference models,
+    /// proving that activity by one agent never leaks into or consumes another agent's allowances.
+    #[test]
+    fn p8_cross_agent_policy_isolation_holds_across_interleaved_sequences(
+        specs in three_agent_policies_strategy(),
+        steps in multi_agent_steps_strategy(),
+    ) {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.ledger().set_sequence_number(START_LEDGER);
+
+        let wallet = env.register(PolicyWalletExampleContract, ());
+        let client = PolicyWalletExampleContractClient::new(&env, &wallet);
+        client.initialize(&Address::generate(&env), &Address::generate(&env));
+
+        let shared_sellers: std::vec::Vec<Address> = (0..=SELLERS).map(|_| Address::generate(&env)).collect();
+        let shared_assets: std::vec::Vec<Address> = (0..=ASSETS).map(|_| Address::generate(&env)).collect();
+        let shared_resources: std::vec::Vec<BytesN<32>> = (0..=RESOURCES)
+            .map(|i| BytesN::from_array(&env, &[0x50 + i as u8; 32]))
+            .collect();
+
+        let agents = [
+            Address::generate(&env),
+            Address::generate(&env),
+            Address::generate(&env),
+        ];
+
+        let mut models = [Model::default(), Model::default(), Model::default()];
+
+        // Configure all 3 policies
+        for i in 0..3 {
+            let actors = Actors {
+                agent: agents[i].clone(),
+                sellers: shared_sellers.clone(),
+                assets: shared_assets.clone(),
+                resources: shared_resources.clone(),
+            };
+            let policy = build_policy(&env, &actors, &specs[i]);
+            client.set_policy(&policy, &0);
+        }
+
+        for (agent_idx, step) in steps {
+            let idx = (agent_idx % 3) as usize;
+            advance(&env, &step);
+            let ledger = env.ledger().sequence();
+            let day = ledger / LEDGERS_PER_DAY;
+
+            let (seller, asset, resource) = (
+                step.seller as usize,
+                step.asset as usize,
+                step.resource as usize,
+            );
+            let amount = amount_for(&step, &specs[idx], &models[idx], ledger);
+            let expected = models[idx].expected(&specs[idx], ledger, seller, asset, resource, amount);
+
+            let args = (
+                &agents[idx],
+                &shared_sellers[seller],
+                &shared_assets[asset],
+                &amount,
+                &shared_resources[resource],
+            );
+
+            let before_storage = snapshot(&env, &wallet);
+            let checked = defined(client.try_check_payment(args.0, args.1, args.2, args.3, args.4));
+            prop_assert_eq!(checked, expected);
+            prop_assert_eq!(snapshot(&env, &wallet), before_storage);
+
+            if step.authorize {
+                let authorized = defined(client.try_authorize_payment(args.0, args.1, args.2, args.3, args.4));
+                prop_assert_eq!(authorized, checked);
+                if authorized.is_ok() {
+                    models[idx].record(ledger, seller, resource, amount);
+                } else {
+                    prop_assert_eq!(snapshot(&env, &wallet), before_storage);
+                }
+            }
+
+            // Assert isolation across all three agents: each agent's contract spend
+            // must match its own independent model and must NEVER be affected by other agents.
+            for j in 0..3 {
+                let spent = client.spent_today(&agents[j]);
+                let count = client.authorized_count_today(&agents[j]);
+                prop_assert_eq!(spent, models[j].spent.get(&day).copied().unwrap_or(0));
+                prop_assert_eq!(count, models[j].authorizations.get(&day).copied().unwrap_or(0));
+                prop_assert!(spent <= specs[j].per_day);
+                prop_assert!(count <= specs[j].max_authorizations);
+            }
+        }
+    }
+}
+
+/// Invariant: Same-ledger authorization permutations and rejections never cause state drift.
+/// Rejected calls leave storage unchanged, and permutations of valid authorizations that fit
+/// within caps accumulate deterministically without order-dependent drift.
+#[test]
+fn same_ledger_authorization_permutations_and_rejections_preserve_consistency() {
+    let env = Env::default();
+    let (client, actors) = setup(&env);
+    let ledger = START_LEDGER + 1;
+    env.ledger().set_sequence_number(ledger);
+
+    let mut policy = pinned_policy(&env, &actors, 100, START_LEDGER + 50);
+    policy.max_authorizations_per_day = 10;
+    client.set_policy(&policy, &0);
+
+    let wallet = client.address.clone();
+    let initial_storage = snapshot(&env, &wallet);
+
+    // Sequence of invalid calls on the same ledger:
+    let unlisted_seller = &actors.sellers[SELLERS];
+    let unlisted_asset = &actors.assets[ASSETS];
+    let unlisted_resource = &actors.resources[RESOURCES];
+
+    assert_eq!(
+        defined(client.try_authorize_payment(&actors.agent, unlisted_seller, &actors.assets[0], &10, &actors.resources[0])),
+        Err(PolicyWalletError::SellerNotAllowed)
+    );
+    assert_eq!(snapshot(&env, &wallet), initial_storage);
+
+    assert_eq!(
+        defined(client.try_authorize_payment(&actors.agent, &actors.sellers[0], unlisted_asset, &10, &actors.resources[0])),
+        Err(PolicyWalletError::AssetNotAllowed)
+    );
+    assert_eq!(snapshot(&env, &wallet), initial_storage);
+
+    assert_eq!(
+        defined(client.try_authorize_payment(&actors.agent, &actors.sellers[0], &actors.assets[0], &10, unlisted_resource)),
+        Err(PolicyWalletError::ResourceHashNotAllowed)
+    );
+    assert_eq!(snapshot(&env, &wallet), initial_storage);
+
+    // Valid authorization 1: 30
+    assert_eq!(
+        defined(client.try_authorize_payment(&actors.agent, &actors.sellers[0], &actors.assets[0], &30, &actors.resources[0])),
+        Ok(())
+    );
+    let after_first = snapshot(&env, &wallet);
+
+    // More invalid calls in the middle of a same-ledger sequence:
+    assert_eq!(
+        defined(client.try_authorize_payment(&actors.agent, unlisted_seller, &actors.assets[0], &10, &actors.resources[0])),
+        Err(PolicyWalletError::SellerNotAllowed)
+    );
+    assert_eq!(snapshot(&env, &wallet), after_first);
+
+    // Valid authorization 2: 40
+    assert_eq!(
+        defined(client.try_authorize_payment(&actors.agent, &actors.sellers[0], &actors.assets[0], &40, &actors.resources[0])),
+        Ok(())
+    );
+
+    // Daily cap violation (30 + 40 + 50 = 120 > 100):
+    let after_second = snapshot(&env, &wallet);
+    assert_eq!(
+        defined(client.try_authorize_payment(&actors.agent, &actors.sellers[0], &actors.assets[0], &50, &actors.resources[0])),
+        Err(PolicyWalletError::AmountExceedsDailyCap)
+    );
+    assert_eq!(snapshot(&env, &wallet), after_second);
+
+    // Valid authorization 3: 30 (exact cap: 30 + 40 + 30 = 100)
+    assert_eq!(
+        defined(client.try_authorize_payment(&actors.agent, &actors.sellers[0], &actors.assets[0], &30, &actors.resources[0])),
+        Ok(())
+    );
+    assert_eq!(client.spent_today(&actors.agent), 100);
+    assert_eq!(client.authorized_count_today(&actors.agent), 3);
 }

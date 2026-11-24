@@ -52,7 +52,9 @@ fn make_policy(
     valid_until_ledger: u32,
 ) -> SpendingPolicy {
     SpendingPolicy {
+        revision: 0,
         agent: agent.clone(),
+        revision: 0,
         max_amount_per_payment: max_per_payment,
         max_amount_per_day: max_per_day,
         max_authorizations_per_day: 100,
@@ -62,6 +64,14 @@ fn make_policy(
         allowed_assets: vec![env, asset.clone()],
         allowed_resource_hashes: vec![env, resource_hash.clone()],
         seller_limits: vec![env],
+        asset_limits: vec![
+            env,
+            AssetSpendingLimit {
+                asset: asset.clone(),
+                max_amount_per_payment: max_per_payment,
+                max_amount_per_day: max_per_day,
+            },
+        ],
         resource_limits: vec![env],
         revision: 0,
     }
@@ -74,22 +84,23 @@ fn set_policy_with_owner_auth(
     owner: &Address,
     policy: SpendingPolicy,
 ) {
-    let expected_revision = client
+    let rev = client
         .try_get_policy(&policy.agent)
         .ok()
         .and_then(Result::ok)
-        .map_or(0, |existing| existing.revision);
+        .map(|p| p.revision)
+        .unwrap_or(0);
     client
         .mock_auths(&[MockAuth {
             address: owner,
             invoke: &MockAuthInvoke {
                 contract: contract_id,
                 fn_name: "set_policy",
-                args: (policy.clone(), expected_revision).into_val(env),
+                args: (policy.clone(), 0_u32).into_val(env),
                 sub_invokes: &[],
             },
         }])
-        .set_policy(&policy, &expected_revision);
+        .set_policy(&policy, &0);
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -233,7 +244,7 @@ fn mutation_owner_auth_wrong_party_in_set_policy_is_caught() {
             invoke: &MockAuthInvoke {
                 contract: &contract_id,
                 fn_name: "set_policy",
-                args: (policy.clone(), 0u32).into_val(&env),
+                args: (policy.clone(), 0_u32).into_val(&env),
                 sub_invokes: &[],
             },
         }])
@@ -268,16 +279,19 @@ fn mutation_agent_auth_removal_in_authorize_payment_is_caught() {
     let resource_hash = BytesN::from_array(&env, &[0xc1; 32]);
 
     client.initialize(&owner, &Address::generate(&env));
-    client.set_policy(&make_policy(
-        &env,
-        &agent,
-        &seller,
-        &asset,
-        &resource_hash,
-        50,
-        100,
-        100,
-    ), &0);
+    client.set_policy(
+        &make_policy(
+            &env,
+            &agent,
+            &seller,
+            &asset,
+            &resource_hash,
+            50,
+            100,
+            100,
+        ),
+        &0,
+    );
 
     // Drop mock_all_auths and test with no auth for authorize_payment.
     let env2 = Env::default();
@@ -311,7 +325,7 @@ fn mutation_agent_auth_removal_in_authorize_payment_is_caught() {
             invoke: &MockAuthInvoke {
                 contract: &contract_id2,
                 fn_name: "set_policy",
-                args: (policy2.clone(), 0u32).into_val(&env2),
+                args: (policy2.clone(), 0_u32).into_val(&env2),
                 sub_invokes: &[],
             },
         }])
@@ -367,7 +381,7 @@ fn mutation_agent_auth_wrong_party_in_authorize_payment_is_caught() {
             invoke: &MockAuthInvoke {
                 contract: &contract_id,
                 fn_name: "set_policy",
-                args: (policy.clone(), 0u32).into_val(&env),
+                args: (policy.clone(), 0_u32).into_val(&env),
                 sub_invokes: &[],
             },
         }])
@@ -436,7 +450,7 @@ fn mutation_payment_cap_inversion_is_caught() {
             invoke: &MockAuthInvoke {
                 contract: &contract_id,
                 fn_name: "set_policy",
-                args: (policy.clone(), 0u32).into_val(&env),
+                args: (policy.clone(), 0_u32).into_val(&env),
                 sub_invokes: &[],
             },
         }])
@@ -497,7 +511,7 @@ fn mutation_daily_cap_inversion_is_caught() {
             invoke: &MockAuthInvoke {
                 contract: &contract_id,
                 fn_name: "set_policy",
-                args: (policy.clone(), 0u32).into_val(&env),
+                args: (policy.clone(), 0_u32).into_val(&env),
                 sub_invokes: &[],
             },
         }])
@@ -574,7 +588,7 @@ fn mutation_daily_cap_exact_boundary_succeeds() {
             invoke: &MockAuthInvoke {
                 contract: &contract_id,
                 fn_name: "set_policy",
-                args: (policy.clone(), 0u32).into_val(&env),
+                args: (policy.clone(), 0_u32).into_val(&env),
                 sub_invokes: &[],
             },
         }])
@@ -631,7 +645,7 @@ fn mutation_policy_expiry_check_inversion_is_caught() {
             invoke: &MockAuthInvoke {
                 contract: &contract_id,
                 fn_name: "set_policy",
-                args: (policy.clone(), 0u32).into_val(&env),
+                args: (policy.clone(), 0_u32).into_val(&env),
                 sub_invokes: &[],
             },
         }])
@@ -680,7 +694,7 @@ fn mutation_policy_expiry_check_at_boundary_succeeds() {
             invoke: &MockAuthInvoke {
                 contract: &contract_id,
                 fn_name: "set_policy",
-                args: (policy.clone(), 0u32).into_val(&env),
+                args: (policy.clone(), 0_u32).into_val(&env),
                 sub_invokes: &[],
             },
         }])
@@ -732,7 +746,7 @@ fn mutation_authorize_payment_must_record_daily_spend() {
             invoke: &MockAuthInvoke {
                 contract: &contract_id,
                 fn_name: "set_policy",
-                args: (policy.clone(), 0u32).into_val(&env),
+                args: (policy.clone(), 0_u32).into_val(&env),
                 sub_invokes: &[],
             },
         }])
@@ -908,7 +922,7 @@ fn mutation_policy_activation_check_before_boundary_is_caught() {
             invoke: &MockAuthInvoke {
                 contract: &contract_id,
                 fn_name: "set_policy",
-                args: (policy.clone(), 0u32).into_val(&env),
+                args: (policy.clone(), 0_u32).into_val(&env),
                 sub_invokes: &[],
             },
         }])
@@ -958,7 +972,7 @@ fn mutation_policy_activation_check_at_boundary_succeeds() {
             invoke: &MockAuthInvoke {
                 contract: &contract_id,
                 fn_name: "set_policy",
-                args: (policy.clone(), 0u32).into_val(&env),
+                args: (policy.clone(), 0_u32).into_val(&env),
                 sub_invokes: &[],
             },
         }])

@@ -84,6 +84,8 @@ fn create_with_buyer_auth(
     expires: u32,
     resource_hash: &BytesN<32>,
 ) -> BytesN<32> {
+    let idempotency_key = resource_hash.clone();
+    let idempotency_key = super::unique_idempotency_key(env);
     client
         .mock_auths(&[MockAuth {
             address: buyer,
@@ -97,7 +99,7 @@ fn create_with_buyer_auth(
                     cap,
                     expires,
                     resource_hash.clone(),
-                    resource_hash.clone(),
+                    idempotency_key.clone(),
                 )
                     .into_val(env),
                 sub_invokes: &[MockAuthInvoke {
@@ -115,8 +117,9 @@ fn create_with_buyer_auth(
             &cap,
             &expires,
             resource_hash,
-            resource_hash,
+            &idempotency_key,
         )
+        .create_session(buyer, seller, asset, &cap, &expires, resource_hash, &idempotency_key)
 }
 
 /// Settle a session using an explicit seller authorization tree.
@@ -179,10 +182,20 @@ fn mutation_buyer_auth_removal_in_create_session_is_caught() {
     let asset = stellar_asset(&env, &buyer, 500);
     let (contract, client) = initialized_contract(&env, &buyer, &asset, 500);
     let resource_hash = BytesN::from_array(&env, &[0xa1; 32]);
+    let idempotency_key = BytesN::from_array(&env, &[0xa1; 32]);
 
     // No mock_auths — the contract must enforce buyer.require_auth() itself.
-    let result =
-        client.try_create_session(&buyer, &seller, &asset, &100, &50, &resource_hash, &BytesN::from_array(&env, &[2, 0, 0xA5, 0x5A, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]));
+    let idempotency_key = super::unique_idempotency_key(&env);
+    let result = client.try_create_session(
+        &buyer,
+        &seller,
+        &asset,
+        &100,
+        &50,
+        &resource_hash,
+        &BytesN::from_array(&env, &[0xb0; 32]),
+        &idempotency_key,
+    );
 
     assert!(
         result.is_err(),
@@ -219,8 +232,13 @@ fn mutation_buyer_auth_wrong_party_in_create_session_is_caught() {
     let asset = stellar_asset(&env, &buyer, 500);
     let (contract, client) = initialized_contract(&env, &buyer, &asset, 500);
     let resource_hash = BytesN::from_array(&env, &[0xa2; 32]);
+    let idempotency_key = BytesN::from_array(&env, &[0xa2; 32]);
 
+    let idempotency_key = BytesN::from_array(&env, &[0xb1; 32]);
+
+    let idempotency_key = super::unique_idempotency_key(&env);
     // Attacker provides their own auth for buyer's create_session — must fail.
+    let idempotency_key = crate::test_idempotency_key(&env);
     let result = client
         .mock_auths(&[MockAuth {
             address: &attacker,
@@ -234,12 +252,21 @@ fn mutation_buyer_auth_wrong_party_in_create_session_is_caught() {
                     100_i128,
                     50_u32,
                     resource_hash.clone(),
-                    resource_hash.clone(),)
+                    idempotency_key.clone(),
+                )
                     .into_val(&env),
                 sub_invokes: &[],
             },
         }])
-        .try_create_session(&buyer, &seller, &asset, &100, &50, &resource_hash, &resource_hash);
+        .try_create_session(
+            &buyer,
+            &seller,
+            &asset,
+            &100,
+            &50,
+            &resource_hash,
+            &idempotency_key,
+        );
 
     assert!(
         result.is_err(),
@@ -272,7 +299,7 @@ fn mutation_seller_auth_removal_in_settle_is_caught() {
 
     // Write a fully valid Open session directly into storage.
     env.as_contract(&contract, || {
-        storage::write_session(
+        let _ = storage::write_session(
             &env,
             &Session {
                 id: session_id.clone(),
@@ -291,7 +318,8 @@ fn mutation_seller_auth_removal_in_settle_is_caught() {
                 resource_scheme_version: 1,
                 usage_scheme_version: None,
             },
-        );
+        )
+        .unwrap();
     });
 
     // No mock_auths — the contract must enforce seller.require_auth().
@@ -330,7 +358,7 @@ fn mutation_seller_auth_wrong_party_in_settle_is_caught() {
     let usage_hash = BytesN::from_array(&env, &[0xb6; 32]);
 
     env.as_contract(&contract, || {
-        storage::write_session(
+        let _ = storage::write_session(
             &env,
             &Session {
                 id: session_id.clone(),
@@ -349,7 +377,8 @@ fn mutation_seller_auth_wrong_party_in_settle_is_caught() {
                 resource_scheme_version: 1,
                 usage_scheme_version: None,
             },
-        );
+        )
+        .unwrap();
     });
 
     let result = client
@@ -390,7 +419,7 @@ fn mutation_buyer_auth_removal_in_cancel_is_caught() {
     let resource_hash = BytesN::from_array(&env, &[0xc2; 32]);
 
     env.as_contract(&contract, || {
-        storage::write_session(
+        let _ = storage::write_session(
             &env,
             &Session {
                 id: session_id.clone(),
@@ -409,7 +438,8 @@ fn mutation_buyer_auth_removal_in_cancel_is_caught() {
                 resource_scheme_version: 1,
                 usage_scheme_version: None,
             },
-        );
+        )
+        .unwrap();
     });
 
     // No mock_auths — the contract must enforce buyer.require_auth().
@@ -440,7 +470,7 @@ fn mutation_buyer_auth_seller_cannot_cancel_session() {
     let resource_hash = BytesN::from_array(&env, &[0xc4; 32]);
 
     env.as_contract(&contract, || {
-        storage::write_session(
+        let _ = storage::write_session(
             &env,
             &Session {
                 id: session_id.clone(),
@@ -459,7 +489,8 @@ fn mutation_buyer_auth_seller_cannot_cancel_session() {
                 resource_scheme_version: 1,
                 usage_scheme_version: None,
             },
-        );
+        )
+        .unwrap();
     });
 
     let result = client
@@ -499,10 +530,19 @@ fn mutation_asset_cap_inversion_in_create_session_is_caught() {
     let cap: i128 = 250;
     let (contract, client) = initialized_contract(&env, &buyer, &asset, cap);
     let resource_hash = BytesN::from_array(&env, &[0xd1; 32]);
+    let idempotency_key = BytesN::from_array(&env, &[0xd1; 32]);
 
     // Attempt exactly cap + 1.
-    let result =
-        client.try_create_session(&buyer, &seller, &asset, &(cap + 1), &50, &resource_hash, &BytesN::from_array(&env, &[4, 0, 0xA5, 0x5A, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]));
+    let result = client.try_create_session(
+        &buyer,
+        &seller,
+        &asset,
+        &(cap + 1),
+        &50,
+        &resource_hash,
+        &BytesN::from_array(&env, &[0xd0; 32]),
+        &super::unique_idempotency_key(&env),
+    );
 
     assert_eq!(
         result,
@@ -1123,10 +1163,20 @@ fn mutation_end_to_end_auth_and_cap_guards_are_all_present() {
     let (contract, client) = initialized_contract(&env, &buyer, &asset, cap);
     let resource_hash = BytesN::from_array(&env, &[0xaa; 32]);
     let usage_hash = BytesN::from_array(&env, &[0xab; 32]);
+    let idempotency_key = BytesN::from_array(&env, &[0xac; 32]);
 
     // 1. Cap check fires before buyer auth (no auth needed to see the error).
     assert_eq!(
-        client.try_create_session(&buyer, &seller, &asset, &(cap + 1), &50, &resource_hash, &BytesN::from_array(&env, &[5, 0, 0xA5, 0x5A, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1])),
+        client.try_create_session(
+            &buyer,
+            &seller,
+            &asset,
+            &(cap + 1),
+            &50,
+            &resource_hash,
+            &BytesN::from_array(&env, &[0xac; 32]),
+            &super::unique_idempotency_key(&env),
+        ),
         Err(Ok(ContractError::AmountExceedsCap)),
         "cap check did not fire"
     );
@@ -1134,7 +1184,16 @@ fn mutation_end_to_end_auth_and_cap_guards_are_all_present() {
     // 2. Buyer auth is required for a valid amount.
     assert!(
         client
-            .try_create_session(&buyer, &seller, &asset, &cap, &50, &resource_hash, &BytesN::from_array(&env, &[6, 0, 0xA5, 0x5A, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]))
+            .try_create_session(
+                &buyer,
+                &seller,
+                &asset,
+                &cap,
+                &50,
+                &resource_hash,
+                &BytesN::from_array(&env, &[0xad; 32]),
+                &super::unique_idempotency_key(&env),
+            )
             .is_err(),
         "buyer auth was not enforced"
     );

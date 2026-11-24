@@ -4,8 +4,9 @@
 use crate::defined;
 use crate::input::Input;
 use policy_wallet_example::{
-    PolicyWalletError, PolicyWalletExampleContract, PolicyWalletExampleContractClient,
-    ResourceSpendingLimit, SellerSpendingLimit, SpendingPolicy, LEDGERS_PER_DAY,
+    AssetSpendingLimit, PolicyWalletError, PolicyWalletExampleContract,
+    PolicyWalletExampleContractClient, ResourceSpendingLimit, SellerSpendingLimit, SpendingPolicy,
+    LEDGERS_PER_DAY,
 };
 use soroban_sdk::{
     testutils::{storage::Instance as _, Address as _, Ledger as _},
@@ -54,6 +55,16 @@ fn expected_policy(policy: &SpendingPolicy, ledger: u32) -> Result<(), PolicyWal
     };
     for limit in policy.seller_limits.iter() {
         if !policy.allowed_sellers.contains(&limit.seller)
+            || !limit_ok(limit.max_amount_per_payment, limit.max_amount_per_day)
+        {
+            return Err(PolicyWalletError::InvalidPolicy);
+        }
+    }
+    if policy.asset_limits.len() != policy.allowed_assets.len() {
+        return Err(PolicyWalletError::InvalidPolicy);
+    }
+    for limit in policy.asset_limits.iter() {
+        if !policy.allowed_assets.contains(&limit.asset)
             || !limit_ok(limit.max_amount_per_payment, limit.max_amount_per_day)
         {
             return Err(PolicyWalletError::InvalidPolicy);
@@ -117,6 +128,7 @@ pub fn policy(data: &[u8]) {
 
     let mut policy = SpendingPolicy {
         agent: agent.clone(),
+        revision: 0,
         max_amount_per_payment: per_payment,
         max_amount_per_day: per_day,
         max_authorizations_per_day: max_authorizations,
@@ -126,6 +138,7 @@ pub fn policy(data: &[u8]) {
         allowed_assets: Vec::new(&env),
         allowed_resource_hashes: Vec::new(&env),
         seller_limits: Vec::new(&env),
+        asset_limits: Vec::new(&env),
         resource_limits: Vec::new(&env),
         revision: 0,
     };
@@ -140,6 +153,11 @@ pub fn policy(data: &[u8]) {
     for (i, asset) in assets.iter().take(2).enumerate() {
         if pick(asset_mask, i) {
             policy.allowed_assets.push_back(asset.clone());
+            policy.asset_limits.push_back(AssetSpendingLimit {
+                asset: asset.clone(),
+                max_amount_per_payment: per_payment,
+                max_amount_per_day: per_day,
+            });
         }
     }
     let half = |value: i128| (value / 2).max(1);

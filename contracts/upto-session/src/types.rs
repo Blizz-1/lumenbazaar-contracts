@@ -61,6 +61,51 @@ pub enum SessionStatus {
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub enum CommitmentKind {
+    Resource,
+    Usage,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SessionStateCounts {
+    pub response_version: u32,
+    pub open: u64,
+    pub settled: u64,
+    pub cancelled: u64,
+    pub expired: u64,
+    pub rejected: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BuyerSessionCount {
+    pub response_version: u32,
+    pub open: u32,
+    pub total: u32,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum CapIncreaseStatus {
+    Missing,
+    Waiting,
+    Ready,
+    Expired,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CapIncreaseStatusResponse {
+    pub status: CapIncreaseStatus,
+    pub proposed_max_amount: Option<i128>,
+    pub active_at_ledger: Option<u32>,
+    pub expires_at_ledger: Option<u32>,
+    pub is_ready: bool,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CapIncreaseProposal {
     pub proposed_max_amount: i128,
     pub active_at_ledger: u32,
@@ -85,6 +130,23 @@ pub struct Session {
     pub finalized_ledger: Option<u32>,
     pub resource_scheme_version: u32,
     pub usage_scheme_version: Option<u32>,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum TerminalEvidence {
+    Nonterminal,
+    Terminal(TerminalEvidenceDigest),
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TerminalEvidenceDigest {
+    pub evidence_version: u32,
+    pub status: SessionStatus,
+    pub finalized_ledger: u32,
+    pub usage_hash: Option<BytesN<32>>,
+    pub digest: BytesN<32>,
 }
 
 #[contracttype]
@@ -176,6 +238,7 @@ pub enum SettlementRejectionReason {
     AmountExceedsCap,
     Expired,
     EscrowUnderfunded,
+    UnsupportedScheme,
 }
 
 #[contracttype]
@@ -187,6 +250,28 @@ pub struct SettlementPreview {
     pub buyer_refund: i128,
     pub is_expired: bool,
     pub rejection_reason: SettlementRejectionReason,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum CancellationRejectionReason {
+    None,
+    NotFound,
+    AlreadySettled,
+    AlreadyCancelled,
+    AlreadyExpired,
+    AlreadyRejected,
+    Expired,
+    EscrowUnderfunded,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CancellationPreview {
+    pub eligible: bool,
+    pub refundable_amount: i128,
+    pub is_expired: bool,
+    pub rejection_reason: CancellationRejectionReason,
 }
 
 #[contracttype]
@@ -259,7 +344,75 @@ pub enum BatchSessionStatus {
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub enum AuditIndexCategory {
+    ResourceCommitment,
+    UsageCommitment,
+    SellerStateCount,
+    BuyerOpenSessions,
+    SellerOpenSessions,
+    SessionNotFound,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SessionIndexMismatch {
+    pub session_id: BytesN<32>,
+    pub category: AuditIndexCategory,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SessionIndexAuditResult {
+    pub audited_count: u32,
+    pub mismatches: Vec<SessionIndexMismatch>,
+    pub is_consistent: bool,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BatchSessionResult {
     pub session_id: BytesN<32>,
     pub status: BatchSessionStatus,
 }
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AssetExposureHeadroom {
+    pub ceiling: i128,
+    pub exposure: i128,
+    pub headroom: i128,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BuyerExposureHeadroom {
+    pub ceiling: i128,
+    pub exposure: i128,
+    pub headroom: i128,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SellerExposureHeadroom {
+    pub ceiling: Option<i128>,
+    pub exposure: i128,
+    pub headroom: Option<i128>,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum AdminRotationStatus {
+    NoProposal,
+    Active {
+        pending_admin: Address,
+        expires_at_ledger: u32,
+    },
+    Expired {
+        pending_admin: Address,
+        expires_at_ledger: u32,
+    },
+}
+
+
+
+
