@@ -27,6 +27,7 @@ struct Lifecycle {
     buyer: Address,
     seller: Address,
     asset: Address,
+    next_idempotency: core::cell::Cell<u8>,
 }
 
 impl Lifecycle {
@@ -59,6 +60,7 @@ impl Lifecycle {
             buyer,
             seller,
             asset,
+            next_idempotency: core::cell::Cell::new(1),
         }
     }
 
@@ -66,7 +68,18 @@ impl Lifecycle {
         UptoSessionContractClient::new(&self.env, &self.contract_id)
     }
 
+    fn next_key(&self) -> BytesN<32> {
+        let n = self.next_idempotency.get();
+        self.next_idempotency.set(n.wrapping_add(1).max(1));
+        BytesN::from_array(&self.env, &[n; 32])
+    }
+
     fn create(&self, expires_at_ledger: u32) -> BytesN<32> {
+        static NEXT_IDEMPOTENCY: std::sync::atomic::AtomicU64 =
+            std::sync::atomic::AtomicU64::new(1);
+        let n = NEXT_IDEMPOTENCY.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let mut key = [0u8; 32];
+        key[..8].copy_from_slice(&n.to_be_bytes());
         self.client().create_session(
             &self.buyer,
             &self.seller,
@@ -74,6 +87,8 @@ impl Lifecycle {
             &CAP,
             &expires_at_ledger,
             &BytesN::from_array(&self.env, &[7; 32]),
+            &self.next_key(),
+            &unique_idempotency_key(&self.env),
         )
     }
 
@@ -463,6 +478,8 @@ fn sr9_missing_instance_config_blocks_creation_and_admin_but_not_exits() {
             &CAP,
             &EXPIRY,
             &BytesN::from_array(&h.env, &[7; 32]),
+            &h.next_key(),
+            &unique_idempotency_key(&h.env),
         ),
         Err(Ok(ContractError::NotInitialized))
     );
@@ -482,6 +499,13 @@ fn sr9_missing_instance_config_blocks_creation_and_admin_but_not_exits() {
     // Existing escrow can still leave through the session's own record.
     client.cancel(&cancelled);
     client.settle(&settled, &CAP, &h.usage_hash());
+    h.env.as_contract(&h.contract_id, || {
+        assert_eq!(storage::read_liability(&h.env, &h.asset), 0);
+    });
+    assert_eq!(
+        client.try_get_escrow_liability(&h.asset),
+        Err(Ok(ContractError::NotInitialized))
+    );
     h.env.as_contract(&h.contract_id, || {
         assert_eq!(storage::read_liability(&h.env, &h.asset), 0);
     });

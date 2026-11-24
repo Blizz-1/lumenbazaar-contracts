@@ -1,12 +1,29 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
-import { recordReceipt, requireTestnet } from "../lib/network-receipts.mjs";
+import { existsSync, readFileSync } from "node:fs";
+import { join, resolve } from "node:path";
+import { runResumableDeployment } from "../lib/deploy-journal.mjs";
+import {
+  fetchReceipt,
+  receiptsDirectory,
+  recordReceipt,
+  requireTestnet,
+  writeReceipt,
+} from "../lib/network-receipts.mjs";
 import { buildSimulateAndSubmit } from "../lib/soroban-transactions.mjs";
+import {
+  checkLedgerFreshness,
+  createDeploymentPlan,
+  formatPreflightReport,
+  runPreflight,
+  expectedWasmHashes,
+  verifyExpectedArtifacts,
+  writeDeploymentPlan,
+} from "../lib/deployment-preflight.mjs";
 import {
   buildContracts,
   deployUploadedContract,
+  getContractWasmHash,
   hasFlag,
   invokeContractTransaction,
   publicKey,
@@ -18,8 +35,8 @@ import {
 } from "../lib/stellar-cli.mjs";
 
 const dryRun = hasFlag("--dry-run");
-const source = sourceAccount("testnet-deployer");
 const manifestPath = join(repoRoot, "deployments", "testnet.json");
+const planPath = join(repoRoot, "deployments", "testnet-plan.json");
 
 const available = [
   {
@@ -40,16 +57,52 @@ const available = [
 ];
 const selected = selectContracts();
 
+// Fail early, before any build or deployment work, with a category-specific report.
+const preflight = await runPreflight({ dryRun, contracts: selected });
+if (!preflight.success) {
+  console.error(formatPreflightReport(preflight));
+  process.exit(1);
+}
+const reviewedHashes = expectedWasmHashes();
+
 if (!dryRun) {
   requireTestnet();
   requireCleanContractSources();
 }
 
 buildContracts({ dryRun });
+const plannedContracts = dryRun
+  ? selected.map((contract) => ({ ...contract, artifactSha256: reviewedHashes[contract.name], hashSource: "LUMENBAZAAR_EXPECTED_WASM_HASHES" }))
+  : verifyExpectedArtifacts(selected, reviewedHashes, repoRoot);
+for (const contract of plannedContracts) {
+  if (!contract.artifactSha256) throw new Error(`Missing reviewed WASM hash for ${contract.name}`);
+}
+const rpcUrl = process.env.LUMENBAZAAR_RPC_URL || "https://soroban-testnet.stellar.org";
+const ledgerGuard = dryRun ? {
+  primary: rpcUrl,
+  trusted: process.env.LUMENBAZAAR_TRUSTED_RPC_URL || "required-before-deployment",
+  maxLag: Number(process.env.LUMENBAZAAR_MAX_RPC_LEDGER_LAG || 2),
+} : await checkLedgerFreshness({
+  primaryUrl: rpcUrl,
+  trustedUrl: process.env.LUMENBAZAAR_TRUSTED_RPC_URL,
+  maxLag: Number(process.env.LUMENBAZAAR_MAX_RPC_LEDGER_LAG || 2),
+});
+const plan = createDeploymentPlan({
+  contracts: plannedContracts,
+  deployer: process.env.LUMENBAZAAR_DEPLOYER_PUBLIC_KEY || "testnet-deployer",
+  initialization: ["test-token", "upto-session", "policy-wallet-example"],
+  expectedWrites: ["deployments/testnet.json", "network transaction receipts"],
+  ledgerGuard,
+});
+writeDeploymentPlan(planPath, plan);
+console.log(`deployment plan ${plan.planSha256}: ${planPath}`);
+if (dryRun) process.exit(0);
+
+const source = sourceAccount("testnet-deployer");
 
 const contracts = {};
-for (const contract of selected) {
-  const artifactSha256 = dryRun ? "dry-run" : sha256(readFileSync(join(repoRoot, contract.wasm)));
+for (const contract of plannedContracts) {
+  const artifactSha256 = contract.artifactSha256;
   const interfaceJson = runStellar(
     ["contract", "info", "interface", "--wasm", contract.wasm, "--output", "json"],
     { capture: true, dryRun },
@@ -78,6 +131,8 @@ for (const contract of selected) {
     name: contract.name,
     alias: contract.alias,
     network: "testnet",
+    deploymentPlanSha256: plan.planSha256,
+    ledgerGuard,
     wasm: contract.wasm,
     contractId: deployed.contractId,
     artifactSha256,
@@ -100,15 +155,76 @@ for (const contract of selected) {
 // A deployment run starts a new local manifest so evidence from older runs cannot be mixed in.
 writeManifest(
   manifestPath,
-  {
-    network: "testnet",
-    sourceCommit: dryRun ? "dry-run" : git(["rev-parse", "HEAD"]),
-    deployer: dryRun ? source : publicKey(source),
-    toolchain: dryRun ? {} : toolchainVersions(),
-    contracts,
+  sourceCommit: dryRun ? "dry-run" : git(["rev-parse", "HEAD"]),
+  deployer: dryRun ? source : publicKey(source),
+  toolchain: dryRun ? {} : toolchainVersions(),
+  readArtifactSha256: (contract) => sha256(readFileSync(join(repoRoot, contract.wasm))),
+  readInterfaceSha256: (contract) => {
+    const interfaceJson = runStellar(
+      ["contract", "info", "interface", "--wasm", contract.wasm, "--output", "json"],
+      { capture: true, dryRun: false },
+    );
+    return sha256(interfaceJson);
   },
-  { dryRun },
-);
+  uploadContract: async (contract, { artifactSha256, dryRun: isDryRun }) => {
+    const upload = uploadContract({ ...contract, source, dryRun: isDryRun });
+    if (!isDryRun && upload.skipped) {
+      // The CLI skips WASM that another account already installed. Public evidence needs an upload
+      // signed by this deployer, so submit the install transaction explicitly.
+      const receipt = await buildSimulateAndSubmit(
+        [
+          "contract",
+          "upload",
+          "--wasm",
+          contract.wasm,
+          "--source-account",
+          source,
+          "--network",
+          "testnet",
+          "--build-only",
+        ],
+        source,
+      );
+      if (receipt.status !== "SUCCESS") {
+        throw new Error(`Explicit upload of ${contract.name} failed on ledger.`);
+      }
+      upload.transactionHash = receipt.transactionHash;
+      upload.wasmHash = artifactSha256;
+      console.log(
+        `${contract.name}: WASM was already installed; recorded an explicit upload by the deployer`,
+      );
+    }
+    return upload;
+  },
+  deployContract: async (contract, { wasmHash, dryRun: isDryRun }) =>
+    deployUploadedContract({ ...contract, wasmHash, source, dryRun: isDryRun }),
+  recordReceipt: async (transactionHash) => recordReceipt(transactionHash),
+  verifyReceipt: async (transactionHash) => {
+    const localPath = join(receiptsDirectory, `${transactionHash}.json`);
+    if (existsSync(localPath)) {
+      return JSON.parse(readFileSync(localPath, "utf8"));
+    }
+    const receipt = await fetchReceipt(transactionHash);
+    writeReceipt(receipt);
+    return receipt;
+  },
+  verifyContractWasmHash: async (contractId) =>
+    getContractWasmHash({ contractId, network: "testnet" }),
+  readAssetMetadata: async (contractId) => readAssetMetadata(contractId),
+  writeManifest,
+});
+
+function resolveJournalPath() {
+  const index = process.argv.indexOf("--journal");
+  if (index === -1) {
+    return join(repoRoot, "deployments", "testnet.deploy-journal.json");
+  }
+  const value = process.argv[index + 1];
+  if (!value || value.startsWith("-")) {
+    throw new Error("--journal requires a file path");
+  }
+  return resolve(repoRoot, value);
+}
 
 function selectContracts() {
   const index = process.argv.indexOf("--contracts");
@@ -118,15 +234,27 @@ function selectContracts() {
   const names = (process.argv[index + 1] ?? "").split(",").filter(Boolean);
   const unknown = names.filter((name) => !available.some((contract) => contract.name === name));
   if (names.length === 0 || unknown.length > 0) {
-    throw new Error(`--contracts accepts a comma-separated subset of: ${available.map((c) => c.name).join(", ")}`);
+    throw new Error(
+      `--contracts accepts a comma-separated subset of: ${available.map((c) => c.name).join(", ")}`,
+    );
   }
   return available.filter((contract) => names.includes(contract.name));
 }
 
 function requireCleanContractSources() {
-  const changes = git(["status", "--porcelain", "--", "contracts", "Cargo.toml", "Cargo.lock", "rust-toolchain.toml"]);
+  const changes = git([
+    "status",
+    "--porcelain",
+    "--",
+    "contracts",
+    "Cargo.toml",
+    "Cargo.lock",
+    "rust-toolchain.toml",
+  ]);
   if (changes) {
-    throw new Error("Contract sources differ from HEAD; public evidence must be built from the recorded commit.");
+    throw new Error(
+      "Contract sources differ from HEAD; public evidence must be built from the recorded commit.",
+    );
   }
 }
 
@@ -153,7 +281,11 @@ function readAssetMetadata(contractId) {
         send: "no",
       }).stdout,
     );
-  return { code: read("symbol"), decimals: read("decimals"), purpose: "Custom test-only token; not USDC" };
+  return {
+    code: read("symbol"),
+    decimals: read("decimals"),
+    purpose: "Custom test-only token; not USDC",
+  };
 }
 
 function git(args) {

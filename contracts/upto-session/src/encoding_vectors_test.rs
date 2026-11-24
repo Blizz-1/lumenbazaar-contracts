@@ -19,8 +19,6 @@
 
 extern crate std;
 
-use std::string::ToString as _;
-
 use crate::{
     events,
     ids::{self, SessionIdInput, UsageCommitmentInput},
@@ -35,7 +33,15 @@ use soroban_sdk::{
     xdr::{self, Limits, ScAddress, ScVal, ToXdr, WriteXdr},
     Address, Bytes, BytesN, Env, String as SorobanString,
 };
-use std::{borrow::ToOwned, format, path::PathBuf, str::FromStr, string::String, vec, vec::Vec};
+use std::{
+    borrow::ToOwned,
+    format,
+    path::PathBuf,
+    str::FromStr,
+    string::{String, ToString},
+    vec,
+    vec::Vec,
+};
 
 /// Version of the published vector set. Bump it (and add a new lock and
 /// changelog entry) whenever any existing vector or encoding rule changes.
@@ -337,6 +343,7 @@ struct SessionCase {
     expires_at_ledger: u32,
     resource_hash: [u8; 32],
     sequence: u64,
+    idempotency_key: [u8; 32],
 }
 
 fn session_cases(env: &Env) -> Vec<SessionCase> {
@@ -351,6 +358,7 @@ fn session_cases(env: &Env) -> Vec<SessionCase> {
         expires_at_ledger: 5_067_600,
         resource_hash: [0x09; 32],
         sequence: 7,
+        idempotency_key: [0x08; 32],
     };
     let nfc = "R\u{e9}seau synth\u{e9}tique ; 2026".to_owned();
     let nfd = "Re\u{301}seau synthe\u{301}tique ; 2026".to_owned();
@@ -395,6 +403,11 @@ fn session_cases(env: &Env) -> Vec<SessionCase> {
             ..base()
         },
         SessionCase {
+            name: "idempotency-key-all-zero",
+            idempotency_key: [0x00; 32],
+            ..base()
+        },
+        SessionCase {
             name: "contract-seller-address",
             seller: CONTRACT_SELLER,
             ..base()
@@ -427,6 +440,7 @@ fn session_id_vectors(env: &Env, contract: &Address) -> Vec<Value> {
             let seller = address(env, case.seller);
             let asset = address(env, ASSET);
             let resource_hash = BytesN::from_array(env, &case.resource_hash);
+            let idempotency_key = BytesN::from_array(env, &case.idempotency_key);
             let input = SessionIdInput {
                 buyer: &buyer,
                 seller: &seller,
@@ -435,6 +449,7 @@ fn session_id_vectors(env: &Env, contract: &Address) -> Vec<Value> {
                 expires_at_ledger: case.expires_at_ledger,
                 resource_hash: &resource_hash,
                 sequence: case.sequence,
+                idempotency_key: &idempotency_key,
             };
             let (preimage, session_id) = env.as_contract(contract, || {
                 (
@@ -459,6 +474,10 @@ fn session_id_vectors(env: &Env, contract: &Address) -> Vec<Value> {
                 json!(hex::encode(case.resource_hash)),
             );
             vector.insert("sequence".into(), json!(case.sequence.to_string()));
+            vector.insert(
+                "idempotencyKeyHex".into(),
+                json!(hex::encode(case.idempotency_key)),
+            );
             vector.insert("preimageXdrHex".into(), json!(hex_bytes(&preimage)));
             vector.insert(
                 "sessionIdHex".into(),
