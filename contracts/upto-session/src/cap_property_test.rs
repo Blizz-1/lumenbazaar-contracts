@@ -143,6 +143,7 @@ fn run_settlements(cap: i128, amounts: &[i128]) {
         &cap,
         &EXPIRES_AT,
         &BytesN::from_array(&env, &[31; 32]),
+        &BytesN::from_array(&env, &[30; 32]),
         &unique_idempotency_key(&env),
     );
     let usage_hash = BytesN::from_array(&env, &[32; 32]);
@@ -279,6 +280,7 @@ proptest! {
             &amount,
             &EXPIRES_AT,
             &BytesN::from_array(&env, &[33; 32]),
+            &BytesN::from_array(&env, &[34; 32]),
             &unique_idempotency_key(&env),
         );
         let events = contract_event_count(&env, &contract_id);
@@ -325,6 +327,7 @@ proptest! {
             prop_assert_eq!(result.map(|_| ()), Err(Ok(ContractError::InvalidAssetCap)));
             prop_assert_eq!(client.get_asset_max_session_amount(&asset), initial);
         } else if update > initial {
+            prop_assert_eq!(result.map(|_| ()), Err(Ok(ContractError::CapIncreasePending)));
             prop_assert_eq!(
                 result.map(|_| ()),
                 Err(Ok(ContractError::CapIncreasePending))
@@ -416,6 +419,7 @@ fn overflow_adjacent_escrow_totals_fail_without_state_change() {
         &(i128::MAX - 5),
         &EXPIRES_AT,
         &hash,
+        &BytesN::from_array(&env, &[35; 32]),
         &unique_idempotency_key(&env),
     );
     // Exactly reaching i128::MAX of aggregate liability is still valid.
@@ -426,6 +430,7 @@ fn overflow_adjacent_escrow_totals_fail_without_state_change() {
         &5,
         &EXPIRES_AT,
         &hash,
+        &BytesN::from_array(&env, &[36; 32]),
         &unique_idempotency_key(&env),
     );
     assert_eq!(client.get_escrow_liability(&asset), i128::MAX);
@@ -439,6 +444,7 @@ fn overflow_adjacent_escrow_totals_fail_without_state_change() {
         &1,
         &EXPIRES_AT,
         &hash,
+        &BytesN::from_array(&env, &[37; 32]),
         &unique_idempotency_key(&env),
     );
     assert!(result.is_err());

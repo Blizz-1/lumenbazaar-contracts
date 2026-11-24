@@ -31,6 +31,7 @@ struct Harness {
     buyer: Address,
     seller: Address,
     asset: Address,
+    next_idempotency: core::cell::Cell<u8>,
 }
 
 impl Harness {
@@ -49,11 +50,18 @@ impl Harness {
             buyer,
             seller,
             asset,
+            next_idempotency: core::cell::Cell::new(1),
         }
     }
 
     fn client(&self) -> UptoSessionContractClient<'_> {
         UptoSessionContractClient::new(&self.env, &self.contract_id)
+    }
+
+    fn next_key(&self) -> BytesN<32> {
+        let n = self.next_idempotency.get();
+        self.next_idempotency.set(n.wrapping_add(1).max(1));
+        BytesN::from_array(&self.env, &[n; 32])
     }
 
     fn create(&self, expires_at_ledger: u32) -> BytesN<32> {
@@ -64,6 +72,7 @@ impl Harness {
             &CAP,
             &expires_at_ledger,
             &BytesN::from_array(&self.env, &[7; 32]),
+            &self.next_key(),
             &unique_idempotency_key(&self.env),
         )
     }
@@ -178,6 +187,11 @@ fn instance_ttl_extension_boundary_is_exact_for_config_changes() {
     // Exactly at the threshold: the same call extends to the full amount.
     harness.ledger(AT_THRESHOLD);
     assert_eq!(harness.instance_ttl(), DEFAULT_TTL_THRESHOLD);
+    client.set_asset_max_session_amount(&harness.asset, &CAP);
+    assert_eq!(harness.instance_ttl(), TTL_EXTENSION_AMOUNT);
+    assert_eq!(
+        client.get_asset_max_session_amount(&harness.asset),
+        CAP
     client.set_asset_max_session_amount(&harness.asset, &(CAP * 2));
     assert_eq!(harness.instance_ttl(), TTL_EXTENSION_AMOUNT);
     assert_eq!(
@@ -500,6 +514,7 @@ fn lapsed_instance_config_fails_closed_for_admin_and_new_sessions_only() {
             &CAP,
             &SESSION_EXPIRY,
             &BytesN::from_array(&harness.env, &[9; 32]),
+            &harness.next_key(),
             &unique_idempotency_key(&harness.env),
         ),
         Err(Ok(ContractError::NotInitialized))
@@ -565,6 +580,7 @@ fn creation_and_rotation_expiry_windows_have_exact_bounds() {
             &1,
             &expires_at_ledger,
             &hash,
+            &harness.next_key(),
             &unique_idempotency_key(&harness.env),
         )
     };
@@ -589,6 +605,98 @@ fn creation_and_rotation_expiry_windows_have_exact_bounds() {
     assert!(client
         .try_propose_admin(&pending, &(1_000 + MAX_ADMIN_ROTATION_DURATION_LEDGERS))
         .is_ok());
+}
+
+#[test]
+fn idempotency_retention_boundary_and_divergence_guarantees() {
+    let harness = Harness::new();
+    let client = harness.client();
+    let id_key = BytesN::from_array(&harness.env, &[42; 32]);
+    let resource_hash = BytesN::from_array(&harness.env, &[99; 32]);
+    let session_expiry = 500;
+
+    // Create session with idempotency key
+    let session_id = client.create_session(
+        &harness.buyer,
+        &harness.seller,
+        &harness.asset,
+        &100,
+        &session_expiry,
+        &resource_hash,
+        &id_key,
+    );
+
+    let storage_key = DataKey::Idempotency(harness.buyer.clone(), id_key.clone());
+    let session_key = DataKey::Session(session_id.clone());
+
+    // Before extension, verify record availability and session alignment
+    assert_eq!(
+        harness.env.as_contract(&harness.contract_id, || {
+            storage::read_idempotency_key(&harness.env, &harness.buyer, &id_key)
+        }),
+        Some(session_id.clone())
+    );
+
+    // Initial TTLs
+    let initial_session_ttl = harness.persistent_ttl(&session_key);
+    let initial_id_ttl = harness.persistent_ttl(&storage_key);
+    assert_eq!(initial_session_ttl, TTL_EXTENSION_AMOUNT);
+    assert_eq!(initial_id_ttl, TTL_EXTENSION_AMOUNT);
+
+    // Test boundary at threshold - 1 (remaining TTL: DEFAULT_TTL_THRESHOLD + 1)
+    // Advance to AT_THRESHOLD - 1
+    harness.ledger(AT_THRESHOLD - 1);
+    assert_eq!(harness.persistent_ttl(&session_key), DEFAULT_TTL_THRESHOLD + 1);
+    assert_eq!(harness.persistent_ttl(&storage_key), DEFAULT_TTL_THRESHOLD + 1);
+
+    // Test boundary at threshold (remaining TTL: DEFAULT_TTL_THRESHOLD)
+    harness.ledger(AT_THRESHOLD);
+    assert_eq!(harness.persistent_ttl(&session_key), DEFAULT_TTL_THRESHOLD);
+    assert_eq!(harness.persistent_ttl(&storage_key), DEFAULT_TTL_THRESHOLD);
+
+    // Test boundary at threshold + 1 (remaining TTL: DEFAULT_TTL_THRESHOLD - 1)
+    harness.ledger(AT_THRESHOLD + 1);
+    assert_eq!(harness.persistent_ttl(&session_key), DEFAULT_TTL_THRESHOLD - 1);
+    assert_eq!(harness.persistent_ttl(&storage_key), DEFAULT_TTL_THRESHOLD - 1);
+
+    // Extension: calling extend_ttl re-aligns retention for both session and idempotency
+    client.extend_ttl(&session_id);
+    assert_eq!(harness.persistent_ttl(&session_key), TTL_EXTENSION_AMOUNT);
+    assert_eq!(harness.persistent_ttl(&storage_key), TTL_EXTENSION_AMOUNT);
+
+    // Ensure record and session retention cannot diverge unexpectedly:
+    // Retrying with the same parameters returns the identical session_id
+    let retried_id = client.create_session(
+        &harness.buyer,
+        &harness.seller,
+        &harness.asset,
+        &100,
+        &session_expiry,
+        &resource_hash,
+        &id_key,
+    );
+    assert_eq!(retried_id, session_id);
+
+    // Simulate entry lapse / expiry of idempotency record
+    harness.remove_persistent(&storage_key);
+    assert_eq!(
+        harness.env.as_contract(&harness.contract_id, || {
+            storage::read_idempotency_key(&harness.env, &harness.buyer, &id_key)
+        }),
+        None
+    );
+
+    // Expired records cannot resolve to a different session; a fresh call creates a distinct session
+    let fresh_id = client.create_session(
+        &harness.buyer,
+        &harness.seller,
+        &harness.asset,
+        &100,
+        &session_expiry,
+        &resource_hash,
+        &id_key,
+    );
+    assert_ne!(fresh_id, session_id);
 }
 
 #[test]

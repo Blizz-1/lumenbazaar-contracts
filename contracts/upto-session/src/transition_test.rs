@@ -247,6 +247,7 @@ fn run_sequence(actions: &[Action]) -> Outcome {
         &CAP,
         &EXPIRES_AT,
         &BytesN::from_array(&env, &[41; 32]),
+        &BytesN::from_array(&env, &[42; 32]),
         &unique_idempotency_key(&env),
     );
 
