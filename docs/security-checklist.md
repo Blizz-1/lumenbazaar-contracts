@@ -4,7 +4,7 @@ This checklist records the contract controls that are ready for audit review.
 
 | Control | Status | Test evidence | Notes |
 | --- | --- | --- | --- |
-| Authorization boundaries | Complete | `initialize_stores_admin_once`, `create_session_requires_buyer_auth`, `settle_requires_seller_auth`, `settle_rejects_wrong_seller_auth`, `cancel_requires_buyer_auth` | Buyer creates/cancels, seller settles, admin initializes once. |
+| Authorization boundaries | Complete | `initialize_stores_admin_once`, `create_session_requires_buyer_auth`, `settle_requires_seller_auth`, `settle_rejects_wrong_seller_auth`, `cancel_requires_buyer_auth`, `all_contract_entrypoints_are_classified_and_covered_by_admin_matrix`, `admin_method_authorization_matrix_enforces_required_missing_and_forbidden_callers` | Buyer creates/cancels, seller settles, admin initializes once, and every administrative entrypoint is covered by the auditable authorization matrix (required signer, missing auth, and forbidden callers). |
 | Live authorization evidence | Complete | `artifacts/testnet/live-evidence-2026-10-20.json`: `wrong_seller_settle` (tx `08c40a76509df8a8a34bc403f70fb7e758ed2ac6b68351a770b8db22617e1e6c`, ledger 5290725) and `wrong_buyer_cancel` (tx `5a78eaa23dd1def028b0fc3b77d8d686bed6559fd6cc17baa6f4da991718fe99`, ledger 5290728) | On deployed testnet contract `CDI5ZVB4VUQQJ5DJ25M4QBXYI273LN4PHN7TW6BT6VHERELK26SH7YY3`, an account other than the bound seller cannot settle and an account other than the bound buyer cannot cancel. Both attempts were submitted and failed on ledger with `Error(Auth, InvalidAction)`; token balances, escrow liability, and session state are identical before and after, and the session stays `Open`. The scheduled Horizon check re-verifies both as failed transactions. |
 | Cap enforcement | Complete | `settle_rejects_invalid_amounts_and_expiry`, `validation::tests::rejects_invalid_settlement_amounts` | Settlement must be positive and cannot exceed `max_amount`. |
 | Double-settlement prevention | Complete | `settle_prevents_double_settlement`, `settle_rejects_finalized_sessions`, `cancel_rejects_already_settled_session` | Finalized sessions cannot be settled or cancelled again. |
@@ -21,6 +21,13 @@ This checklist records the contract controls that are ready for audit review.
 | Nested invocation resistance | Complete | `nested_create_during_funding_is_rejected_without_duplicate_state`, `nested_settle_during_payout_cannot_finalize_twice`, `nested_cancel_during_refund_cannot_finalize_twice`, `nested_recovery_during_refund_cannot_finalize_twice` | A callback token cannot reenter create or any terminal path; tests assert one outer event, unchanged authorization scope, and conserved balances/liability. |
 | Generated state-machine invariants | Complete | `generated_sequences_preserve_value_caps_and_isolation`, `docs/property-testing.md` | Fixed-seed generated actions assert value conservation, caps, terminal immutability, wrong-signer rejection, and cross-session/cross-asset isolation. |
 | Adversarial token behavior | Complete | `adversarial_create_failures_roll_back_funds_liability_and_sequence`, `adversarial_terminal_failures_leave_the_session_open_and_funded`, `nested_token_callback_cannot_reenter_a_terminal_transition` | Failed, under-reporting, partial, and nested token behavior cannot partially commit escrow state; exact balance deltas are checked around transfers. |
+
+## Expected Host Traps vs Contract Errors
+
+Genuine host-level failures are expected host traps that fail closed at the Soroban environment boundary and are deliberately not intercepted or converted into misleading contract errors:
+- **Host meter/budget exhaustion**: Exceeding CPU instruction or memory limits traps immediately at the VM level, preventing any state writes and aborting the transaction cleanly.
+- **Missing contract executable code**: Invocations targeting uninstalled WASM or nonexistent contract addresses trap at the host level before contract code executes.
+- **Authentication framework errors**: Missing or invalid authorization checks returning `HostError(Auth, InvalidAction)` fail closed at the Soroban host boundary. The contract relies on host-enforced authorization invariants rather than catching or masking auth failures into misleading application error codes.
 
 ## Remaining Review Notes
 

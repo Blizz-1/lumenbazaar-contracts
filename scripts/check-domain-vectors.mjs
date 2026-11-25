@@ -158,6 +158,7 @@ const perturbations = [
   { field: "expiresAtLedger", mod: { expiresAtLedger: 5067601 } },
   { field: "resourceHash", mod: { resourceHash: "0a09090909090909090909090909090909090909090909090909090909090909" } },
   { field: "sequence", mod: { sequence: "8" } },
+  { field: "idempotencyKey", mod: { idempotencyKey: "0908080808080808080808080808080808080808080808080808080808080808" } },
 ];
 
 for (const { field, mod } of perturbations) {

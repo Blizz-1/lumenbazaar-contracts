@@ -79,6 +79,16 @@ Deployment and verification scripts share the bounded retry runner in
 
 Contract release and audit evidence must use the following exact toolchain:
 
+For credential-free local reproduction, build `Dockerfile.reproducible` and
+run it with no secret environment variables or credential mounts. Its default
+command performs two clean builds and compares both WASM hashes and generated
+contract specs:
+
+```bash
+docker build -f Dockerfile.reproducible -t lumenbazaar-repro .
+docker run --rm --network=none lumenbazaar-repro
+```
+
 | Component | Version | Enforcement |
 | --- | --- | --- |
 | Rust | 1.93.1 | `rust-toolchain.toml` and CI |
@@ -87,6 +97,7 @@ Contract release and audit evidence must use the following exact toolchain:
 | Stellar CLI | 28.0.0 | CI release archive |
 | Node.js | 22.12.0 | CI setup |
 | cargo-audit | 0.22.2 | CI install command |
+| cargo-deny | 0.20.2 | CI install command and `deny.toml` |
 | generated Stellar SDK | 17.2.1 | Binding generator output |
 
 Historical deployments keep the toolchain they recorded. The testnet WASM release workflow
@@ -94,9 +105,25 @@ Historical deployments keep the toolchain they recorded. The testnet WASM releas
 and Stellar CLI versions in that manifest, from archives pinned in `scripts/lib/wasm-release.mjs`.
 See "Testnet WASM releases" in `deployments/README.md`.
 
+## Forbidden production unwrap and expect
+
+Production contract code must not call `.unwrap()` or `.expect(...)`. A failed assumption in a
+contract should surface as a typed contract error (or an explicit `match` / `ok_or`), never as an
+opaque panic. Each production contract crate root carries
+`#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]`, and CI runs
+`node --test scripts/lib/unwrap-gate.test.mjs` and `node scripts/check-no-production-unwrap.mjs`,
+which scan `contracts/**/*.rs` and report violations as `file:line:col: forbidden [unwrap|expect] call`.
+
+The gate ignores:
+
+- comments (`//`, `/* ... */`) and string literals;
+- code inside `#[cfg(test)]` items (such as `mod tests { ... }`) and `#[test]` functions;
+- test files: `*_test.rs`, `test.rs`, and anything under `tests/`, `benches/` or `fuzz/`.
+
+`.unwrap_or()`, `.unwrap_or_default()` and `.unwrap_or_else()` are allowed.
 ## Dependency Audit Policy
 
-CI runs `cargo audit --deny warnings` and `npm audit --omit=dev`. A Rust advisory may be ignored only when it has a matching record in `audits/dependency-exceptions.json` with an owner, dependency path, risk statement, planned resolution, and future expiry date. The exception checker fails on expired, duplicate, malformed, or incomplete records.
+CI runs `cargo audit --deny warnings`, `cargo deny check licenses bans sources`, and `npm audit --omit=dev`. `cargo-deny` enforces workspace-wide (`all-features = true`, including dev-dependencies) approved SPDX licenses, crates.io-only registries with zero git sources, wildcard bans, and duplicate-version controls in `deny.toml` without duplicating `cargo-audit` advisory output. A Rust advisory or `cargo-deny` exception may be added only when it has a matching, version-pinned record in `audits/dependency-exceptions.json` or `audits/cargo-deny-exceptions.json` with an owner, dependency path, justification/risk statement, planned resolution, and future expiry date. `scripts/check-dependency-exceptions.mjs` fails on expired, duplicate, malformed, unpinned, stale, or undocumented records.
 
 The current `RUSTSEC-2024-0436` exception covers the unmaintained `paste` crate inherited through released Soroban host-side dependencies. It is not a vulnerability report and the package is absent from deployed contract WASM. Contracts maintainers must remove the ignore as soon as a compatible Soroban release removes the dependency, and no later than the recorded recheck date without a fresh review.
 
@@ -124,6 +151,17 @@ CI runs the provenance unit tests and both scripts on every pull request and rel
 build, and uploads `artifacts/provenance` for reviewers. Provenance is supply-chain
 evidence that a released artifact matches a reviewed source and toolchain; it does not
 replace code review or an external security audit.
+
+## Offline release signatures
+
+Release checksum and provenance metadata are accepted only with Ed25519
+signatures from active identities in `release-signers.json`. The registry pins
+public keys, validity windows, and revocation state; unknown, expired, or
+revoked keys fail closed. Tag workflows verify committed detached signature
+metadata under `release-signatures/<tag>/` without contacting a key server.
+Private keys are never stored or passed to CI. Maintainers sign the exact file
+bytes offline, recording `keyId`, `algorithm`, `artifactSha256`, and a base64
+signature in the detached JSON file.
 
 ## Resource and Rent Regression Guardrails
 

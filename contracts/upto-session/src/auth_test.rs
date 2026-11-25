@@ -1,10 +1,14 @@
 extern crate std;
 
+use std::borrow::ToOwned;
 use crate::*;
 use soroban_sdk::{
     contract, contractimpl,
-    testutils::{Address as _, AuthorizedFunction, AuthorizedInvocation, MockAuth, MockAuthInvoke},
-    token, Address, Env, IntoVal, Symbol, Val, Vec as SorobanVec,
+    testutils::{
+        Address as _, AuthorizedFunction, AuthorizedInvocation, Events as _, Ledger as _, MockAuth,
+        MockAuthInvoke,
+    },
+    token, Address, Env, IntoVal, Symbol, TryFromVal, Val, Vec as SorobanVec,
 };
 
 #[contract]
@@ -259,7 +263,9 @@ fn production_escrow_funds_and_settles_with_exact_authorization_trees() {
     let client = UptoSessionContractClient::new(&env, &contract_id);
     let asset = create_test_asset(&env, &identities.buyer, 500);
     let resource_hash = BytesN::from_array(&env, &[41; 32]);
+    let idempotency_key = BytesN::from_array(&env, &[44; 32]);
     let usage_hash = BytesN::from_array(&env, &[42; 32]);
+    let idempotency_key = BytesN::from_array(&env, &[43; 32]);
     let asset_policies = soroban_sdk::vec![
         &env,
         AssetPolicy {
@@ -283,6 +289,7 @@ fn production_escrow_funds_and_settles_with_exact_authorization_trees() {
         }])
         .initialize(&identities.admin, &asset_policies);
 
+    let idempotency_key = BytesN::from_array(&env, &[43; 32]);
     let session_id = client
         .mock_auths(&[MockAuth {
             address: &identities.buyer,
@@ -296,7 +303,7 @@ fn production_escrow_funds_and_settles_with_exact_authorization_trees() {
                     500_i128,
                     50_u32,
                     resource_hash.clone(),
-                    resource_hash.clone(),
+                    idempotency_key.clone(),
                 )
                     .into_val(&env),
                 sub_invokes: &[MockAuthInvoke {
@@ -319,7 +326,7 @@ fn production_escrow_funds_and_settles_with_exact_authorization_trees() {
             &500,
             &50,
             &resource_hash,
-            &resource_hash,
+            &idempotency_key,
         );
 
     client
@@ -372,975 +379,891 @@ fn escrow_funding_rejects_an_attacker_authorization() {
     assert_eq!(token::Client::new(&env, &asset).balance(&contract_id), 0);
 }
 
-// ── Issue #174: Account and contract-auth parity matrix ──────────────────────
 
-use soroban_sdk::{
-    auth::{ContractContext, InvokerContractAuthEntry, SubContractInvocation},
-    testutils::{Events as _, Ledger as _},
-    vec as soroban_vec,
-};
+// ---------------------------------------------------------------------------
+// Authorization tree snapshots for every public `upto-session` mutation.
+//
+// Each case drives the real contract through `try_invoke_contract` with an
+// explicit `mock_auths` tree and then compares `env.auths()` against the golden
+// fixture entry in `artifacts/interface/authorization-trees.json`. Unauthorized
+// attempts (missing signer, wrong signer, role confusion, wrong function, wrong
+// arguments, missing sub-invocation) must fail with zero ledger, balance,
+// liability and event change.
+// ---------------------------------------------------------------------------
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum PrincipalKind {
-    Account,
-    Contract,
+const AUTH_FIXTURE: &str = include_str!("../../../artifacts/interface/authorization-trees.json");
+const UPTO_CONTRACT: &str = "upto-session";
+const UPTO_MUTATIONS: [&str; 28] = [
+    "initialize",
+    "propose_admin",
+    "accept_admin",
+    "cancel_admin_rotation",
+    "pause_creation",
+    "resume_creation",
+    "activate_asset",
+    "deprecate_asset",
+    "remove_asset",
+    "set_asset_max_session_amount",
+    "set_asset_exposure_ceiling",
+    "set_buyer_exposure_ceiling",
+    "set_seller_exposure_ceiling",
+    "set_max_buyer_open_sessions",
+    "set_max_seller_open_sessions",
+    "propose_asset_cap_increase",
+    "accept_asset_cap_increase",
+    "cancel_asset_cap_increase",
+    "recover_surplus",
+    "create_session",
+    "settle",
+    "cancel",
+    "reduce_session_cap",
+    "reject",
+    "extend_session_expiry",
+    "recover_expired",
+    "recover_expired_batch",
+    "extend_ttl",
+];
+
+fn fixture_mutations() -> std::vec::Vec<serde_json::Value> {
+    let doc: serde_json::Value = serde_json::from_str(AUTH_FIXTURE).expect("fixture is JSON");
+    doc["mutations"].as_array().expect("mutations array").clone()
 }
 
-const PRINCIPAL_KINDS: [PrincipalKind; 2] = [PrincipalKind::Account, PrincipalKind::Contract];
-
-/// Minimal contract principal that can act as an administrator, buyer, or seller
-/// both via explicit `MockAuth` trees and via direct cross-contract invocations
-/// using `env.authorize_as_current_contract` for nested token transfers.
-#[contract]
-struct ContractPrincipal;
-
-#[contractimpl]
-impl ContractPrincipal {
-    pub fn initialize_escrow(
-        env: Env,
-        escrow: Address,
-        policies: soroban_sdk::Vec<AssetPolicy>,
-    ) {
-        let self_addr = env.current_contract_address();
-        UptoSessionContractClient::new(&env, &escrow).initialize(&self_addr, &policies);
-    }
-
-    pub fn open_session(
-        env: Env,
-        escrow: Address,
-        seller: Address,
-        asset: Address,
-        max_amount: i128,
-        expires_at_ledger: u32,
-        resource_hash: BytesN<32>,
-        idempotency_key: BytesN<32>,
-    ) -> BytesN<32> {
-        let self_addr = env.current_contract_address();
-        // Explicitly authorize the nested token::transfer sub-invocation from this contract.
-        env.authorize_as_current_contract(soroban_vec![
-            &env,
-            InvokerContractAuthEntry::Contract(SubContractInvocation {
-                context: ContractContext {
-                    contract: asset.clone(),
-                    fn_name: Symbol::new(&env, "transfer"),
-                    args: (self_addr.clone(), escrow.clone(), max_amount).into_val(&env),
-                },
-                sub_invocations: soroban_vec![&env],
-            }),
-        ]);
-        UptoSessionContractClient::new(&env, &escrow).create_session(
-            &self_addr,
-            &seller,
-            &asset,
-            &max_amount,
-            &expires_at_ledger,
-            &resource_hash,
-            &idempotency_key,
-        )
-    }
-
-    pub fn reduce_cap(env: Env, escrow: Address, session_id: BytesN<32>, new_max_amount: i128) {
-        UptoSessionContractClient::new(&env, &escrow)
-            .reduce_session_cap(&session_id, &new_max_amount);
-    }
-
-    pub fn cancel_session(env: Env, escrow: Address, session_id: BytesN<32>) {
-        UptoSessionContractClient::new(&env, &escrow).cancel(&session_id);
-    }
-
-    pub fn settle_session(
-        env: Env,
-        escrow: Address,
-        session_id: BytesN<32>,
-        actual_amount: i128,
-        usage_hash: BytesN<32>,
-    ) {
-        UptoSessionContractClient::new(&env, &escrow)
-            .settle(&session_id, &actual_amount, &usage_hash);
-    }
-
-    pub fn reject_session(env: Env, escrow: Address, session_id: BytesN<32>) {
-        UptoSessionContractClient::new(&env, &escrow).reject(&session_id);
-    }
-
-    pub fn pause_escrow(env: Env, escrow: Address) {
-        UptoSessionContractClient::new(&env, &escrow).pause_creation();
-    }
-
-    pub fn resume_escrow(env: Env, escrow: Address) {
-        UptoSessionContractClient::new(&env, &escrow).resume_creation();
-    }
+fn fixture_entry(contract: &str, method: &str) -> serde_json::Value {
+    fixture_mutations()
+        .into_iter()
+        .find(|entry| entry["contract"] == contract && entry["method"] == method)
+        .unwrap_or_else(|| panic!("missing fixture entry {contract}.{method}"))
 }
 
-fn make_principal(env: &Env, kind: PrincipalKind) -> Address {
-    match kind {
-        PrincipalKind::Account => Address::generate(env),
-        PrincipalKind::Contract => env.register(ContractPrincipal, ()),
-    }
+#[derive(Clone)]
+struct Node {
+    contract: Address,
+    fn_name: &'static str,
+    args: SorobanVec<Val>,
+    sub: Option<std::boxed::Box<Node>>,
 }
 
-fn default_policy(asset: &Address, cap: i128) -> AssetPolicy {
-    AssetPolicy {
-        asset: asset.clone(),
-        max_session_amount: cap,
-        min_session_amount: 1,
-        max_asset_exposure: i128::MAX,
-        max_buyer_exposure: i128::MAX,
-    }
-}
-
-macro_rules! single_mock_auth {
-    ($signer:expr, $contract:expr, $fn_name:expr, $args:expr $(,)?) => {
-        MockAuth {
-            address: $signer,
-            invoke: &MockAuthInvoke {
-                contract: $contract,
-                fn_name: $fn_name,
-                args: $args,
-                sub_invokes: &[],
-            },
-        }
-    };
-}
-
-fn escrow_events_count(env: &Env, contract: &Address) -> usize {
-    env.events()
-        .all()
-        .filter_by_contract(contract)
-        .events()
-        .len()
-}
-
-fn create_session_with_explicit_tree(
-    env: &Env,
-    client: &UptoSessionContractClient<'_>,
-    contract_id: &Address,
-    buyer: &Address,
-    seller: &Address,
-    asset: &Address,
-    amount: i128,
-    expires_at_ledger: u32,
-    resource_hash: &BytesN<32>,
-    idempotency_key: &BytesN<32>,
-) -> BytesN<32> {
-    let args: SorobanVec<Val> = (
-        buyer.clone(),
-        seller.clone(),
-        asset.clone(),
-        amount,
-        expires_at_ledger,
-        resource_hash.clone(),
-        idempotency_key.clone(),
-    )
-        .into_val(env);
-    let session_id = client
-        .mock_auths(&[MockAuth {
-            address: buyer,
-            invoke: &MockAuthInvoke {
-                contract: contract_id,
-                fn_name: "create_session",
-                args: args.clone(),
-                sub_invokes: &[MockAuthInvoke {
-                    contract: asset,
-                    fn_name: "transfer",
-                    args: (buyer.clone(), contract_id.clone(), amount).into_val(env),
-                    sub_invokes: &[],
-                }],
-            },
-        }])
-        .create_session(
-            buyer,
-            seller,
-            asset,
-            &amount,
-            &expires_at_ledger,
-            resource_hash,
-            idempotency_key,
-        );
-
-    assert_single_authorization(
-        env,
-        buyer,
+impl Node {
+    fn expected(&self, env: &Env) -> AuthorizedInvocation {
         contract_invocation(
             env,
-            contract_id,
-            "create_session",
-            args,
-            std::vec![token_transfer_invocation(
-                env,
-                asset,
-                buyer,
-                contract_id,
-                amount,
-            )],
-        ),
-    );
-    session_id
+            &self.contract,
+            self.fn_name,
+            self.args.clone(),
+            self.sub
+                .iter()
+                .map(|sub| sub.expected(env))
+                .collect::<std::vec::Vec<_>>(),
+        )
+    }
 }
 
-#[test]
-fn auth_parity_matrix_all_role_combinations_across_session_mutations() {
-    for admin_kind in PRINCIPAL_KINDS {
-        for buyer_kind in PRINCIPAL_KINDS {
-            for seller_kind in PRINCIPAL_KINDS {
-                let env = Env::default();
-                let contract_id = env.register(UptoSessionContract, ());
-                let client = UptoSessionContractClient::new(&env, &contract_id);
+struct Case {
+    method: &'static str,
+    args: SorobanVec<Val>,
+    roles: std::vec::Vec<&'static str>,
+    sub: Option<Node>,
+}
 
-                let admin = make_principal(&env, admin_kind);
-                let buyer = make_principal(&env, buyer_kind);
-                let seller = make_principal(&env, seller_kind);
-                let asset = create_test_asset(&env, &buyer, 2_000);
-                let token = token::Client::new(&env, &asset);
-                let policies = soroban_vec![&env, default_policy(&asset, 1_000)];
+struct Harness {
+    env: Env,
+    id: Address,
+    admin: Address,
+    pending_admin: Address,
+    buyer: Address,
+    seller: Address,
+    attacker: Address,
+    recipient: Address,
+    token_admin: Address,
+    asset: Address,
+    next_key: u8,
+}
 
-                // 1. initialize (Account or Contract admin)
-                let init_args: SorobanVec<Val> = (admin.clone(), policies.clone()).into_val(&env);
-                client
-                    .mock_auths(&[MockAuth {
-                        address: &admin,
-                        invoke: &MockAuthInvoke {
-                            contract: &contract_id,
-                            fn_name: "initialize",
-                            args: init_args.clone(),
-                            sub_invokes: &[],
-                        },
-                    }])
-                    .initialize(&admin, &policies);
-                assert_single_authorization(
-                    &env,
-                    &admin,
-                    contract_invocation(&env, &contract_id, "initialize", init_args, std::vec![]),
-                );
+const SESSION_AMOUNT: i128 = 500;
+const SESSION_EXPIRY: u32 = 50;
 
-                // 2. create_session with explicit nested token::transfer sub-invocation
-                let r1 = BytesN::from_array(&env, &[0x11; 32]);
-                let k1 = BytesN::from_array(&env, &[0x21; 32]);
-                let s_settle = create_session_with_explicit_tree(
-                    &env,
-                    &client,
-                    &contract_id,
-                    &buyer,
-                    &seller,
-                    &asset,
-                    500,
-                    50,
-                    &r1,
-                    &k1,
-                );
+impl Harness {
+    fn uninitialized() -> Self {
+        let env = Env::default();
+        let id = env.register(UptoSessionContract, ());
+        let token_admin = Address::generate(&env);
+        let asset = env
+            .register_stellar_asset_contract_v2(token_admin.clone())
+            .address();
+        let harness = Self {
+            id,
+            admin: Address::generate(&env),
+            pending_admin: Address::generate(&env),
+            buyer: Address::generate(&env),
+            seller: Address::generate(&env),
+            attacker: Address::generate(&env),
+            recipient: Address::generate(&env),
+            token_admin,
+            asset,
+            next_key: 1,
+            env,
+        };
+        harness.mint(&harness.buyer, 10_000);
+        harness
+    }
 
-                // 2b. Idempotent replay requires buyer auth on create_session with NO transfer sub-invocation.
-                let replay_args: SorobanVec<Val> = (
-                    buyer.clone(),
-                    seller.clone(),
-                    asset.clone(),
-                    500_i128,
-                    50_u32,
-                    r1.clone(),
-                    k1.clone(),
-                )
-                    .into_val(&env);
-                let replayed = client
-                    .mock_auths(&[MockAuth {
-                        address: &buyer,
-                        invoke: &MockAuthInvoke {
-                            contract: &contract_id,
-                            fn_name: "create_session",
-                            args: replay_args.clone(),
-                            sub_invokes: &[],
-                        },
-                    }])
-                    .create_session(&buyer, &seller, &asset, &500, &50, &r1, &k1);
-                assert_eq!(replayed, s_settle);
-                assert_single_authorization(
-                    &env,
-                    &buyer,
-                    contract_invocation(
-                        &env,
-                        &contract_id,
-                        "create_session",
-                        replay_args,
-                        std::vec![],
-                    ),
-                );
+    fn initialized() -> Self {
+        let harness = Self::uninitialized();
+        let args = harness.args((harness.admin.clone(), harness.policies()));
+        let root = harness.node("initialize", args.clone(), None);
+        harness.must("initialize", &args, &[(harness.admin.clone(), root)]);
+        harness
+    }
 
-                // 3. reduce_session_cap (buyer auth)
-                let reduce_args: SorobanVec<Val> = (s_settle.clone(), 400_i128).into_val(&env);
-                client
-                    .mock_auths(&[MockAuth {
-                        address: &buyer,
-                        invoke: &MockAuthInvoke {
-                            contract: &contract_id,
-                            fn_name: "reduce_session_cap",
-                            args: reduce_args.clone(),
-                            sub_invokes: &[],
-                        },
-                    }])
-                    .reduce_session_cap(&s_settle, &400);
-                assert_single_authorization(
-                    &env,
-                    &buyer,
-                    contract_invocation(
-                        &env,
-                        &contract_id,
-                        "reduce_session_cap",
-                        reduce_args,
-                        std::vec![],
-                    ),
-                );
-                assert_eq!(token.balance(&buyer), 1_600);
-                assert_eq!(token.balance(&contract_id), 400);
+    fn args<T: IntoVal<Env, SorobanVec<Val>>>(&self, tuple: T) -> SorobanVec<Val> {
+        tuple.into_val(&self.env)
+    }
 
-                // 4. extend_session_expiry (mutual buyer + seller auth)
-                let extend_args: SorobanVec<Val> = (s_settle.clone(), 80_u32).into_val(&env);
-                client
-                    .mock_auths(&[
-                        MockAuth {
-                            address: &buyer,
-                            invoke: &MockAuthInvoke {
-                                contract: &contract_id,
-                                fn_name: "extend_session_expiry",
-                                args: extend_args.clone(),
-                                sub_invokes: &[],
-                            },
-                        },
-                        MockAuth {
-                            address: &seller,
-                            invoke: &MockAuthInvoke {
-                                contract: &contract_id,
-                                fn_name: "extend_session_expiry",
-                                args: extend_args.clone(),
-                                sub_invokes: &[],
-                            },
-                        },
-                    ])
-                    .extend_session_expiry(&s_settle, &80);
-                assert_eq!(
-                    env.auths(),
-                    std::vec![
-                        (
-                            buyer.clone(),
-                            contract_invocation(
-                                &env,
-                                &contract_id,
-                                "extend_session_expiry",
-                                extend_args.clone(),
-                                std::vec![],
-                            )
-                        ),
-                        (
-                            seller.clone(),
-                            contract_invocation(
-                                &env,
-                                &contract_id,
-                                "extend_session_expiry",
-                                extend_args,
-                                std::vec![],
-                            )
-                        ),
-                    ]
-                );
+    fn no_args(&self) -> SorobanVec<Val> {
+        SorobanVec::new(&self.env)
+    }
 
-                // 5. extend_ttl (permissionless, zero auths)
-                env.set_auths(&[]);
-                client.extend_ttl(&s_settle);
-                assert!(env.auths().is_empty());
+    fn policy_for(&self, asset: &Address) -> AssetPolicy {
+        AssetPolicy {
+            asset: asset.clone(),
+            max_session_amount: SESSION_AMOUNT,
+            min_session_amount: 1,
+            max_asset_exposure: 10_000,
+            max_buyer_exposure: 10_000,
+        }
+    }
 
-                // 6. settle (seller auth)
-                let usage_hash = BytesN::from_array(&env, &[0x31; 32]);
-                let settle_args: SorobanVec<Val> =
-                    (s_settle.clone(), 150_i128, usage_hash.clone()).into_val(&env);
-                client
-                    .mock_auths(&[MockAuth {
-                        address: &seller,
-                        invoke: &MockAuthInvoke {
-                            contract: &contract_id,
-                            fn_name: "settle",
-                            args: settle_args.clone(),
-                            sub_invokes: &[],
-                        },
-                    }])
-                    .settle(&s_settle, &150, &usage_hash);
-                assert_single_authorization(
-                    &env,
-                    &seller,
-                    contract_invocation(&env, &contract_id, "settle", settle_args, std::vec![]),
-                );
-                assert_eq!(token.balance(&seller), 150);
-                assert_eq!(token.balance(&buyer), 1_850);
+    fn policies(&self) -> SorobanVec<AssetPolicy> {
+        soroban_sdk::vec![&self.env, self.policy_for(&self.asset)]
+    }
 
-                // 7. cancel (buyer auth)
-                let r2 = BytesN::from_array(&env, &[0x12; 32]);
-                let k2 = BytesN::from_array(&env, &[0x22; 32]);
-                let s_cancel = create_session_with_explicit_tree(
-                    &env,
-                    &client,
-                    &contract_id,
-                    &buyer,
-                    &seller,
-                    &asset,
-                    300,
-                    50,
-                    &r2,
-                    &k2,
-                );
-                let cancel_args: SorobanVec<Val> = (s_cancel.clone(),).into_val(&env);
-                client
-                    .mock_auths(&[MockAuth {
-                        address: &buyer,
-                        invoke: &MockAuthInvoke {
-                            contract: &contract_id,
-                            fn_name: "cancel",
-                            args: cancel_args.clone(),
-                            sub_invokes: &[],
-                        },
-                    }])
-                    .cancel(&s_cancel);
-                assert_single_authorization(
-                    &env,
-                    &buyer,
-                    contract_invocation(&env, &contract_id, "cancel", cancel_args, std::vec![]),
-                );
-                assert_eq!(client.get_session(&s_cancel).status, SessionStatus::Cancelled);
+    fn mint(&self, to: &Address, amount: i128) {
+        token::StellarAssetClient::new(&self.env, &self.asset)
+            .mock_auths(&[MockAuth {
+                address: &self.token_admin,
+                invoke: &MockAuthInvoke {
+                    contract: &self.asset,
+                    fn_name: "mint",
+                    args: (to.clone(), amount).into_val(&self.env),
+                    sub_invokes: &[],
+                },
+            }])
+            .mint(to, &amount);
+    }
 
-                // 8. reject (seller auth)
-                let r3 = BytesN::from_array(&env, &[0x13; 32]);
-                let k3 = BytesN::from_array(&env, &[0x23; 32]);
-                let s_reject = create_session_with_explicit_tree(
-                    &env,
-                    &client,
-                    &contract_id,
-                    &buyer,
-                    &seller,
-                    &asset,
-                    200,
-                    50,
-                    &r3,
-                    &k3,
-                );
-                let reject_args: SorobanVec<Val> = (s_reject.clone(),).into_val(&env);
-                client
-                    .mock_auths(&[MockAuth {
-                        address: &seller,
-                        invoke: &MockAuthInvoke {
-                            contract: &contract_id,
-                            fn_name: "reject",
-                            args: reject_args.clone(),
-                            sub_invokes: &[],
-                        },
-                    }])
-                    .reject(&s_reject);
-                assert_single_authorization(
-                    &env,
-                    &seller,
-                    contract_invocation(&env, &contract_id, "reject", reject_args, std::vec![]),
-                );
-                assert_eq!(client.get_session(&s_reject).status, SessionStatus::Rejected);
+    fn new_asset(&self) -> Address {
+        self.env
+            .register_stellar_asset_contract_v2(Address::generate(&self.env))
+            .address()
+    }
 
-                // 9. recover_expired and recover_expired_batch (permissionless, zero auths)
-                let r4 = BytesN::from_array(&env, &[0x14; 32]);
-                let k4 = BytesN::from_array(&env, &[0x24; 32]);
-                let s_exp1 = create_session_with_explicit_tree(
-                    &env,
-                    &client,
-                    &contract_id,
-                    &buyer,
-                    &seller,
-                    &asset,
-                    100,
-                    40,
-                    &r4,
-                    &k4,
-                );
-                let r5 = BytesN::from_array(&env, &[0x15; 32]);
-                let k5 = BytesN::from_array(&env, &[0x25; 32]);
-                let s_exp2 = create_session_with_explicit_tree(
-                    &env,
-                    &client,
-                    &contract_id,
-                    &buyer,
-                    &seller,
-                    &asset,
-                    100,
-                    40,
-                    &r5,
-                    &k5,
-                );
-                env.ledger().set_sequence_number(40);
-                env.set_auths(&[]);
-                client.recover_expired(&s_exp1);
-                assert!(env.auths().is_empty());
-                let batch = client.recover_expired_batch(&soroban_vec![&env, s_exp2.clone()]);
-                assert!(env.auths().is_empty());
-                assert_eq!(batch.get(0).unwrap().status, BatchRecoveryStatus::Recovered);
-                assert_eq!(token.balance(&buyer), 1_850);
-                assert_eq!(token.balance(&seller), 150);
-                assert_eq!(token.balance(&contract_id), 0);
-                assert_eq!(client.get_escrow_liability(&asset), 0);
+    fn balance(&self, asset: &Address, who: &Address) -> i128 {
+        token::Client::new(&self.env, asset).balance(who)
+    }
+
+    fn role(&self, role: &str) -> Address {
+        match role {
+            "admin" => self.admin.clone(),
+            "pending_admin" => self.pending_admin.clone(),
+            "buyer" => self.buyer.clone(),
+            "seller" => self.seller.clone(),
+            other => panic!("unknown role {other}"),
+        }
+    }
+
+    fn identities(&self) -> std::vec::Vec<Address> {
+        std::vec![
+            self.admin.clone(),
+            self.pending_admin.clone(),
+            self.buyer.clone(),
+            self.seller.clone(),
+            self.attacker.clone(),
+        ]
+    }
+
+    fn node(&self, fn_name: &'static str, args: SorobanVec<Val>, sub: Option<Node>) -> Node {
+        Node {
+            contract: self.id.clone(),
+            fn_name,
+            args,
+            sub: sub.map(std::boxed::Box::new),
+        }
+    }
+
+    fn case(&self, method: &'static str, roles: &[&'static str], args: SorobanVec<Val>) -> Case {
+        Case {
+            method,
+            args,
+            roles: roles.to_vec(),
+            sub: None,
+        }
+    }
+
+    fn call(
+        &self,
+        method: &str,
+        args: &SorobanVec<Val>,
+        auths: &[(Address, Node)],
+    ) -> Option<Val> {
+        let subs: std::vec::Vec<std::vec::Vec<MockAuthInvoke>> = auths
+            .iter()
+            .map(|(_, node)| {
+                node.sub
+                    .iter()
+                    .map(|sub| MockAuthInvoke {
+                        contract: &sub.contract,
+                        fn_name: sub.fn_name,
+                        args: sub.args.clone(),
+                        sub_invokes: &[],
+                    })
+                    .collect()
+            })
+            .collect();
+        let invokes: std::vec::Vec<MockAuthInvoke> = auths
+            .iter()
+            .zip(subs.iter())
+            .map(|((_, node), sub_invokes)| MockAuthInvoke {
+                contract: &node.contract,
+                fn_name: node.fn_name,
+                args: node.args.clone(),
+                sub_invokes,
+            })
+            .collect();
+        let mocks: std::vec::Vec<MockAuth> = auths
+            .iter()
+            .zip(invokes.iter())
+            .map(|((address, _), invoke)| MockAuth { address, invoke })
+            .collect();
+        self.env.mock_auths(&mocks);
+        match self.env.try_invoke_contract::<Val, soroban_sdk::Error>(
+            &self.id,
+            &Symbol::new(&self.env, method),
+            args.clone(),
+        ) {
+            Ok(Ok(value)) => Some(value),
+            _ => None,
+        }
+    }
+
+    fn must(&self, method: &str, args: &SorobanVec<Val>, auths: &[(Address, Node)]) -> Val {
+        self.call(method, args, auths)
+            .unwrap_or_else(|| panic!("authorized setup call {method} failed"))
+    }
+
+    /// Runs `case` with its exact authorization tree as setup.
+    fn run_authorized(&self, case: &Case) -> Val {
+        let root = self.node(case.method, case.args.clone(), case.sub.clone());
+        let auths: std::vec::Vec<(Address, Node)> = case
+            .roles
+            .iter()
+            .map(|role| (self.role(role), root.clone()))
+            .collect();
+        self.must(case.method, &case.args, &auths)
+    }
+
+    fn snapshot(&self) -> std::string::String {
+        let snap = self.env.to_ledger_snapshot();
+        let filtered: std::vec::Vec<_> = snap
+            .ledger_entries
+            .into_iter()
+            .filter(|(k, entry)| match &**k {
+                soroban_sdk::xdr::LedgerKey::ContractData(cd) => {
+                    if matches!(cd.key, soroban_sdk::xdr::ScVal::LedgerKeyNonce(_)) {
+                        return false;
+                    }
+                    if matches!(cd.key, soroban_sdk::xdr::ScVal::LedgerKeyContractInstance) {
+                        if let soroban_sdk::xdr::LedgerEntryData::ContractData(cde) = &entry.0.data {
+                            if let soroban_sdk::xdr::ScVal::ContractInstance(ci) = &cde.val {
+                                return ci.storage.is_some();
+                            }
+                        }
+                    }
+                    true
+                }
+                _ => false,
+            })
+            .collect();
+        std::format!("{:?}", filtered)
+    }
+
+    fn event_count(&self) -> usize {
+        self.env.events().all().events().len()
+    }
+
+    fn create_session(&mut self) -> BytesN<32> {
+        let key = BytesN::from_array(&self.env, &[self.next_key; 32]);
+        self.next_key += 1;
+        let case = self.create_session_case(&key);
+        let value = self.run_authorized(&case);
+        BytesN::<32>::try_from_val(&self.env, &value).expect("session id")
+    }
+
+    fn create_session_case(&self, key: &BytesN<32>) -> Case {
+        let resource_hash = BytesN::from_array(&self.env, &[41; 32]);
+        let mut case = self.case(
+            "create_session",
+            &["buyer"],
+            self.args((
+                self.buyer.clone(),
+                self.seller.clone(),
+                self.asset.clone(),
+                SESSION_AMOUNT,
+                SESSION_EXPIRY,
+                resource_hash,
+                key.clone(),
+            )),
+        );
+        case.sub = Some(Node {
+            contract: self.asset.clone(),
+            fn_name: "transfer",
+            args: self.args((self.buyer.clone(), self.id.clone(), SESSION_AMOUNT)),
+            sub: None,
+        });
+        case
+    }
+
+    fn set_ledger(&self, sequence: u32) {
+        self.env.ledger().with_mut(|ledger| {
+            ledger.sequence_number = sequence;
+        });
+    }
+}
+
+fn assert_matches_fixture(h: &Harness, case: &Case) {
+    let entry = fixture_entry(UPTO_CONTRACT, case.method);
+    let roles: std::vec::Vec<&str> = entry["required_signers"]
+        .as_array()
+        .expect("required_signers array")
+        .iter()
+        .map(|role| role.as_str().expect("role string"))
+        .collect();
+    let expected_roles: std::vec::Vec<&str> = if case.roles.is_empty() {
+        std::vec!["permissionless"]
+    } else {
+        case.roles.clone()
+    };
+    assert_eq!(roles, expected_roles, "{} signer roles", case.method);
+    assert_eq!(entry["tree"]["root"]["contract"], UPTO_CONTRACT);
+    assert_eq!(entry["tree"]["root"]["function"], case.method);
+    let subs: std::vec::Vec<&str> = entry["tree"]["sub_invocations"]
+        .as_array()
+        .expect("sub_invocations array")
+        .iter()
+        .map(|sub| sub.as_str_function())
+        .collect();
+    let expected_subs: std::vec::Vec<&str> = case.sub.iter().map(|sub| sub.fn_name).collect();
+    assert_eq!(subs, expected_subs, "{} sub-invocations", case.method);
+    assert_eq!(
+        entry["unauthorized_behavior"],
+        "fails_closed_zero_state_change"
+    );
+    let _ = h;
+}
+
+trait SubFunction {
+    fn as_str_function(&self) -> &str;
+}
+
+impl SubFunction for serde_json::Value {
+    fn as_str_function(&self) -> &str {
+        self["function"].as_str().expect("function string")
+    }
+}
+
+/// Core assertion: pins the exact authorization tree and proves every
+/// unauthorized variant fails closed before the authorized call succeeds.
+fn assert_auth_tree(h: &Harness, case: &Case) {
+    assert_matches_fixture(h, case);
+    let root = h.node(case.method, case.args.clone(), case.sub.clone());
+    let authorized: std::vec::Vec<(Address, Node)> = case
+        .roles
+        .iter()
+        .map(|role| (h.role(role), root.clone()))
+        .collect();
+
+    if !authorized.is_empty() {
+        let mut attempts: std::vec::Vec<(&str, std::vec::Vec<(Address, Node)>)> =
+            std::vec![("missing signer", std::vec::Vec::new())];
+        for candidate in h.identities() {
+            if authorized.iter().any(|(signer, _)| *signer == candidate) {
+                continue;
+            }
+            attempts.push((
+                "wrong signer",
+                authorized
+                    .iter()
+                    .map(|_| (candidate.clone(), root.clone()))
+                    .collect(),
+            ));
+        }
+        if authorized.len() > 1 {
+            for auth in &authorized {
+                attempts.push(("partial signers", std::vec![auth.clone()]));
             }
         }
-    }
-}
+        let mut wrong_function = root.clone();
+        wrong_function.fn_name = "not_the_invoked_function";
+        attempts.push((
+            "wrong function",
+            authorized
+                .iter()
+                .map(|(signer, _)| (signer.clone(), wrong_function.clone()))
+                .collect(),
+        ));
+        let mut wrong_args = root.clone();
+        wrong_args.args.push_back(7_u32.into_val(&h.env));
+        attempts.push((
+            "wrong arguments",
+            authorized
+                .iter()
+                .map(|(signer, _)| (signer.clone(), wrong_args.clone()))
+                .collect(),
+        ));
+        if let Some(sub) = root.sub.as_deref() {
+            let mut missing_sub = root.clone();
+            missing_sub.sub = None;
+            attempts.push((
+                "missing sub-invocation",
+                authorized
+                    .iter()
+                    .map(|(signer, _)| (signer.clone(), missing_sub.clone()))
+                    .collect(),
+            ));
+            let mut wrong_sub = root.clone();
+            let mut altered = sub.clone();
+            altered.args.push_back(7_u32.into_val(&h.env));
+            wrong_sub.sub = Some(std::boxed::Box::new(altered));
+            attempts.push((
+                "wrong sub-invocation arguments",
+                authorized
+                    .iter()
+                    .map(|(signer, _)| (signer.clone(), wrong_sub.clone()))
+                    .collect(),
+            ));
+        }
 
-#[test]
-fn auth_parity_matrix_account_and_contract_admin_mutations_and_rotations() {
-    for initial_admin_kind in PRINCIPAL_KINDS {
-        for next_admin_kind in PRINCIPAL_KINDS {
-            let env = Env::default();
-            let contract_id = env.register(UptoSessionContract, ());
-            let client = UptoSessionContractClient::new(&env, &contract_id);
-            let admin = make_principal(&env, initial_admin_kind);
-            let next_admin = make_principal(&env, next_admin_kind);
-            let surplus_recipient = make_principal(&env, next_admin_kind);
-            let asset1 = create_test_asset(&env, &contract_id, 50);
-            let asset2 = create_test_asset(&env, &admin, 1);
-            let policies = soroban_vec![&env, default_policy(&asset1, 500)];
-
-            let run_admin_call = |signer: &Address, fn_name: &str, args: SorobanVec<Val>| {
-                env.set_auths(&[]);
-                let _ = (signer, fn_name, args);
-            };
-            let _ = run_admin_call;
-
-            // initialize
-            client
-                .mock_auths(&[single_mock_auth!(
-                    &admin,
-                    &contract_id,
-                    "initialize",
-                    (admin.clone(), policies.clone()).into_val(&env),
-                )])
-                .initialize(&admin, &policies);
-
-            // set_asset_max_session_amount
-            client
-                .mock_auths(&[single_mock_auth!(
-                    &admin,
-                    &contract_id,
-                    "set_asset_max_session_amount",
-                    (asset1.clone(), 400_i128).into_val(&env),
-                )])
-                .set_asset_max_session_amount(&asset1, &400);
-            assert_eq!(client.get_asset_max_session_amount(&asset1), 400);
-
-            // propose_asset_cap_increase + cancel_asset_cap_increase
-            client
-                .mock_auths(&[single_mock_auth!(
-                    &admin,
-                    &contract_id,
-                    "propose_asset_cap_increase",
-                    (asset1.clone(), 600_i128, 100_u32, 300_u32).into_val(&env),
-                )])
-                .propose_asset_cap_increase(&asset1, &600, &100, &300);
-            client
-                .mock_auths(&[single_mock_auth!(
-                    &admin,
-                    &contract_id,
-                    "cancel_asset_cap_increase",
-                    (asset1.clone(),).into_val(&env),
-                )])
-                .cancel_asset_cap_increase(&asset1);
-
-            // propose_asset_cap_increase + accept_asset_cap_increase
-            client
-                .mock_auths(&[single_mock_auth!(
-                    &admin,
-                    &contract_id,
-                    "propose_asset_cap_increase",
-                    (asset1.clone(), 600_i128, 100_u32, 300_u32).into_val(&env),
-                )])
-                .propose_asset_cap_increase(&asset1, &600, &100, &300);
-            env.ledger().set_sequence_number(100);
-            client
-                .mock_auths(&[single_mock_auth!(
-                    &admin,
-                    &contract_id,
-                    "accept_asset_cap_increase",
-                    (asset1.clone(),).into_val(&env),
-                )])
-                .accept_asset_cap_increase(&asset1);
-            assert_eq!(client.get_asset_max_session_amount(&asset1), 600);
-
-            // exposure ceilings & session count limits
-            client
-                .mock_auths(&[single_mock_auth!(
-                    &admin,
-                    &contract_id,
-                    "set_seller_exposure_ceiling",
-                    (asset1.clone(), 1_000_i128).into_val(&env),
-                )])
-                .set_seller_exposure_ceiling(&asset1, &1_000);
-            client
-                .mock_auths(&[single_mock_auth!(
-                    &admin,
-                    &contract_id,
-                    "set_asset_exposure_ceiling",
-                    (asset1.clone(), 2_000_i128).into_val(&env),
-                )])
-                .set_asset_exposure_ceiling(&asset1, &2_000);
-            client
-                .mock_auths(&[single_mock_auth!(
-                    &admin,
-                    &contract_id,
-                    "set_buyer_exposure_ceiling",
-                    (asset1.clone(), 1_500_i128).into_val(&env),
-                )])
-                .set_buyer_exposure_ceiling(&asset1, &1_500);
-            client
-                .mock_auths(&[single_mock_auth!(
-                    &admin,
-                    &contract_id,
-                    "set_max_buyer_open_sessions",
-                    (4_u32,).into_val(&env),
-                )])
-                .set_max_buyer_open_sessions(&4);
-            client
-                .mock_auths(&[single_mock_auth!(
-                    &admin,
-                    &contract_id,
-                    "set_max_seller_open_sessions",
-                    (5_u32,).into_val(&env),
-                )])
-                .set_max_seller_open_sessions(&5);
-
-            // activate_asset -> deprecate_asset -> remove_asset
-            let asset2_policy = default_policy(&asset2, 300);
-            client
-                .mock_auths(&[single_mock_auth!(
-                    &admin,
-                    &contract_id,
-                    "activate_asset",
-                    (asset2_policy.clone(),).into_val(&env),
-                )])
-                .activate_asset(&asset2_policy);
-            let reason = BytesN::from_array(&env, &[0x55; 32]);
-            client
-                .mock_auths(&[single_mock_auth!(
-                    &admin,
-                    &contract_id,
-                    "deprecate_asset",
-                    (asset2.clone(), reason.clone()).into_val(&env),
-                )])
-                .deprecate_asset(&asset2, &reason);
-            client
-                .mock_auths(&[single_mock_auth!(
-                    &admin,
-                    &contract_id,
-                    "remove_asset",
-                    (asset2.clone(), reason.clone()).into_val(&env),
-                )])
-                .remove_asset(&asset2, &reason);
-
-            // pause_creation -> resume_creation
-            client
-                .mock_auths(&[single_mock_auth!(
-                    &admin,
-                    &contract_id,
-                    "pause_creation",
-                    ().into_val(&env),
-                )])
-                .pause_creation();
-            client
-                .mock_auths(&[single_mock_auth!(
-                    &admin,
-                    &contract_id,
-                    "resume_creation",
-                    ().into_val(&env),
-                )])
-                .resume_creation();
-
-            // recover_surplus
-            client
-                .mock_auths(&[single_mock_auth!(
-                    &admin,
-                    &contract_id,
-                    "recover_surplus",
-                    (asset1.clone(), surplus_recipient.clone(), 50_i128).into_val(&env),
-                )])
-                .recover_surplus(&asset1, &surplus_recipient, &50);
-            assert_eq!(token::Client::new(&env, &asset1).balance(&surplus_recipient), 50);
-
-            // propose_admin -> cancel_admin_rotation -> propose_admin -> accept_admin
-            client
-                .mock_auths(&[single_mock_auth!(
-                    &admin,
-                    &contract_id,
-                    "propose_admin",
-                    (next_admin.clone(), 200_u32).into_val(&env),
-                )])
-                .propose_admin(&next_admin, &200);
-            client
-                .mock_auths(&[single_mock_auth!(
-                    &admin,
-                    &contract_id,
-                    "cancel_admin_rotation",
-                    ().into_val(&env),
-                )])
-                .cancel_admin_rotation();
-            client
-                .mock_auths(&[single_mock_auth!(
-                    &admin,
-                    &contract_id,
-                    "propose_admin",
-                    (next_admin.clone(), 200_u32).into_val(&env),
-                )])
-                .propose_admin(&next_admin, &200);
-            client
-                .mock_auths(&[single_mock_auth!(
-                    &next_admin,
-                    &contract_id,
-                    "accept_admin",
-                    ().into_val(&env),
-                )])
-                .accept_admin();
-            assert_eq!(client.get_admin(), next_admin);
+        for (label, auths) in attempts {
+            let before = h.snapshot();
+            assert!(
+                h.call(case.method, &case.args, &auths).is_none(),
+                "{}: {label} must be rejected",
+                case.method
+            );
+            assert_eq!(
+                before,
+                h.snapshot(),
+                "{}: {label} changed ledger state",
+                case.method
+            );
+            assert_eq!(
+                h.event_count(),
+                0,
+                "{}: {label} emitted events",
+                case.method
+            );
         }
     }
-}
 
-#[test]
-fn nested_contract_principal_cross_contract_invocations_authorize_explicitly() {
-    let env = Env::default();
-    let escrow_id = env.register(UptoSessionContract, ());
-    let escrow = UptoSessionContractClient::new(&env, &escrow_id);
-
-    let admin_contract = env.register(ContractPrincipal, ());
-    let buyer_contract = env.register(ContractPrincipal, ());
-    let seller_contract = env.register(ContractPrincipal, ());
-    let admin_client = ContractPrincipalClient::new(&env, &admin_contract);
-    let buyer_client = ContractPrincipalClient::new(&env, &buyer_contract);
-    let seller_client = ContractPrincipalClient::new(&env, &seller_contract);
-
-    let asset = create_test_asset(&env, &buyer_contract, 1_500);
-    let token = token::Client::new(&env, &asset);
-    let policies = soroban_vec![&env, default_policy(&asset, 1_000)];
-
-    // Cross-contract initialize: admin_contract is the invoker, so no external auth is needed.
-    admin_client.initialize_escrow(&escrow_id, &policies);
-    assert_eq!(escrow.get_admin(), admin_contract);
-
-    // Cross-contract create_session: buyer_contract explicitly authorizes nested token::transfer.
-    let r1 = BytesN::from_array(&env, &[0x61; 32]);
-    let k1 = BytesN::from_array(&env, &[0x71; 32]);
-    let s1 = buyer_client.open_session(&escrow_id, &seller_contract, &asset, &500, &60, &r1, &k1);
-    assert_eq!(token.balance(&buyer_contract), 1_000);
-    assert_eq!(token.balance(&escrow_id), 500);
-
-    // Cross-contract reduce_session_cap by contract buyer.
-    buyer_client.reduce_cap(&escrow_id, &s1, &400);
-    assert_eq!(token.balance(&buyer_contract), 1_100);
-    assert_eq!(token.balance(&escrow_id), 400);
-
-    // Cross-contract settle by contract seller.
-    let usage = BytesN::from_array(&env, &[0x81; 32]);
-    seller_client.settle_session(&escrow_id, &s1, &250, &usage);
-    assert_eq!(token.balance(&seller_contract), 250);
-    assert_eq!(token.balance(&buyer_contract), 1_250);
-    assert_eq!(token.balance(&escrow_id), 0);
-
-    // Cross-contract cancel by contract buyer and reject by contract seller.
-    let s2 = buyer_client.open_session(
-        &escrow_id,
-        &seller_contract,
-        &asset,
-        &300,
-        &60,
-        &BytesN::from_array(&env, &[0x62; 32]),
-        &BytesN::from_array(&env, &[0x72; 32]),
-    );
-    buyer_client.cancel_session(&escrow_id, &s2);
-    assert_eq!(escrow.get_session(&s2).status, SessionStatus::Cancelled);
-
-    let s3 = buyer_client.open_session(
-        &escrow_id,
-        &seller_contract,
-        &asset,
-        &200,
-        &60,
-        &BytesN::from_array(&env, &[0x63; 32]),
-        &BytesN::from_array(&env, &[0x73; 32]),
-    );
-    seller_client.reject_session(&escrow_id, &s3);
-    assert_eq!(escrow.get_session(&s3).status, SessionStatus::Rejected);
-
-    // Cross-contract pause and resume by contract admin.
-    admin_client.pause_escrow(&escrow_id);
+    let before = h.snapshot();
+    h.must(case.method, &case.args, &authorized);
     assert_eq!(
-        escrow.get_configuration().operational_state,
-        OperationalState::Paused
+        h.env.auths(),
+        authorized
+            .iter()
+            .map(|(signer, node)| (signer.clone(), node.expected(&h.env)))
+            .collect::<std::vec::Vec<_>>(),
+        "{}: recorded authorization tree",
+        case.method
     );
-    admin_client.resume_escrow(&escrow_id);
-    assert_eq!(
-        escrow.get_configuration().operational_state,
-        OperationalState::Active
-    );
-}
-
-#[test]
-fn auth_parity_failures_prove_zero_storage_or_token_movement_for_accounts_and_contracts() {
-    for principal_kind in PRINCIPAL_KINDS {
-        let env = Env::default();
-        let contract_id = env.register(UptoSessionContract, ());
-        let client = UptoSessionContractClient::new(&env, &contract_id);
-        let admin = make_principal(&env, principal_kind);
-        let buyer = make_principal(&env, principal_kind);
-        let seller = make_principal(&env, principal_kind);
-        let attacker = make_principal(&env, principal_kind);
-        let asset = create_test_asset(&env, &buyer, 1_000);
-        let token = token::Client::new(&env, &asset);
-        let policies = soroban_vec![&env, default_policy(&asset, 500)];
-
-        client
-            .mock_auths(&[single_mock_auth!(
-                &admin,
-                &contract_id,
-                "initialize",
-                (admin.clone(), policies.clone()).into_val(&env),
-            )])
-            .initialize(&admin, &policies);
-
-        // 1. Missing nested token::transfer sub-invocation in create_session must fail with no movement.
-        let r_fail = BytesN::from_array(&env, &[0x91; 32]);
-        let k_fail = BytesN::from_array(&env, &[0x92; 32]);
-        let res_no_sub = client
-            .mock_auths(&[single_mock_auth!(
-                &buyer,
-                &contract_id,
-                "create_session",
-                (
-                    buyer.clone(),
-                    seller.clone(),
-                    asset.clone(),
-                    400_i128,
-                    50_u32,
-                    r_fail.clone(),
-                    k_fail.clone(),
-                )
-                    .into_val(&env),
-            )])
-            .try_create_session(&buyer, &seller, &asset, &400, &50, &r_fail, &k_fail);
-        assert!(res_no_sub.is_err());
-        assert_eq!(token.balance(&buyer), 1_000);
-        assert_eq!(token.balance(&contract_id), 0);
-        assert_eq!(client.get_escrow_liability(&asset), 0);
-        assert_eq!(client.get_buyer_exposure(&buyer, &asset), 0);
-        assert_eq!(client.get_seller_exposure(&seller, &asset), 0);
-        assert_eq!(client.get_buyer_open_sessions(&buyer), 0);
-        assert_eq!(client.get_seller_open_sessions(&seller), 0);
-        assert_eq!(escrow_events_count(&env, &contract_id), 0);
-        env.as_contract(&contract_id, || {
-            assert_eq!(storage::read_next_session_sequence(&env), 0);
-        });
-
-        // Open a real session to test mutation failure atomicity.
-        let session_id = create_session_with_explicit_tree(
-            &env,
-            &client,
-            &contract_id,
-            &buyer,
-            &seller,
-            &asset,
-            400,
-            50,
-            &BytesN::from_array(&env, &[0x93; 32]),
-            &BytesN::from_array(&env, &[0x94; 32]),
-        );
-        let session_before = client.get_session(&session_id);
-        let config_before = client.get_configuration();
-        let usage = BytesN::from_array(&env, &[0x95; 32]);
-
-        // 2. Wrong-party / missing auth across settle, cancel, reject, reduce_session_cap,
-        //    extend_session_expiry (only buyer OR only seller), and pause_creation.
-        assert!(client
-            .mock_auths(&[single_mock_auth!(
-                &buyer,
-                &contract_id,
-                "settle",
-                (session_id.clone(), 100_i128, usage.clone()).into_val(&env),
-            )])
-            .try_settle(&session_id, &100, &usage)
-            .is_err());
-        assert_eq!(escrow_events_count(&env, &contract_id), 0);
-
-        assert!(client
-            .mock_auths(&[single_mock_auth!(
-                &seller,
-                &contract_id,
-                "cancel",
-                (session_id.clone(),).into_val(&env),
-            )])
-            .try_cancel(&session_id)
-            .is_err());
-        assert_eq!(escrow_events_count(&env, &contract_id), 0);
-
-        assert!(client
-            .mock_auths(&[single_mock_auth!(
-                &buyer,
-                &contract_id,
-                "reject",
-                (session_id.clone(),).into_val(&env),
-            )])
-            .try_reject(&session_id)
-            .is_err());
-        assert_eq!(escrow_events_count(&env, &contract_id), 0);
-
-        assert!(client
-            .mock_auths(&[single_mock_auth!(
-                &seller,
-                &contract_id,
-                "reduce_session_cap",
-                (session_id.clone(), 200_i128).into_val(&env),
-            )])
-            .try_reduce_session_cap(&session_id, &200)
-            .is_err());
-        assert_eq!(escrow_events_count(&env, &contract_id), 0);
-
-        // extend_session_expiry with only buyer auth must fail
-        assert!(client
-            .mock_auths(&[single_mock_auth!(
-                &buyer,
-                &contract_id,
-                "extend_session_expiry",
-                (session_id.clone(), 90_u32).into_val(&env),
-            )])
-            .try_extend_session_expiry(&session_id, &90)
-            .is_err());
-        assert_eq!(escrow_events_count(&env, &contract_id), 0);
-
-        // extend_session_expiry with only seller auth must fail
-        assert!(client
-            .mock_auths(&[single_mock_auth!(
-                &seller,
-                &contract_id,
-                "extend_session_expiry",
-                (session_id.clone(), 90_u32).into_val(&env),
-            )])
-            .try_extend_session_expiry(&session_id, &90)
-            .is_err());
-        assert_eq!(escrow_events_count(&env, &contract_id), 0);
-
-        // Admin mutation by attacker must fail
-        assert!(client
-            .mock_auths(&[single_mock_auth!(
-                &attacker,
-                &contract_id,
-                "pause_creation",
-                ().into_val(&env),
-            )])
-            .try_pause_creation()
-            .is_err());
-        assert_eq!(escrow_events_count(&env, &contract_id), 0);
-
-        // Assert zero storage and zero token movement across all failed attempts.
-        assert_eq!(client.get_session(&session_id), session_before);
-        assert_eq!(client.get_configuration(), config_before);
-        assert_eq!(token.balance(&buyer), 600);
-        assert_eq!(token.balance(&seller), 0);
-        assert_eq!(token.balance(&contract_id), 400);
-        assert_eq!(client.get_escrow_liability(&asset), 400);
-        assert_eq!(client.get_buyer_exposure(&buyer, &asset), 400);
-        assert_eq!(client.get_seller_exposure(&seller, &asset), 400);
-        assert_eq!(client.get_buyer_open_sessions(&buyer), 1);
-        assert_eq!(client.get_seller_open_sessions(&seller), 1);
+    if !case.roles.is_empty() {
+        assert_ne!(before, h.snapshot(), "{} wrote no state", case.method);
     }
+}
+
+fn assert_permissionless(h: &Harness, case: &Case) {
+    assert!(case.roles.is_empty());
+    assert_matches_fixture(h, case);
+    let root = h.node(case.method, case.args.clone(), None);
+    // An attacker authorization the call does not need must never be consumed.
+    h.must(case.method, &case.args, &[]);
+    assert!(
+        h.env.auths().is_empty(),
+        "{} must not require_auth",
+        case.method
+    );
+    let _ = root;
+}
+
+#[test]
+fn fixture_inventory_matches_the_public_mutation_list_exactly() {
+    let upto: std::vec::Vec<std::string::String> = fixture_mutations()
+        .iter()
+        .filter(|entry| entry["contract"] == UPTO_CONTRACT)
+        .map(|entry| entry["method"].as_str().expect("method").to_owned())
+        .collect();
+    let mut expected: std::vec::Vec<std::string::String> = UPTO_MUTATIONS
+        .iter()
+        .map(|method| (*method).to_owned())
+        .collect();
+    let mut actual = upto.clone();
+    expected.sort();
+    actual.sort();
+    assert_eq!(actual, expected);
+    assert_eq!(upto.len(), UPTO_MUTATIONS.len(), "no duplicate entries");
+    for entry in fixture_mutations() {
+        assert_eq!(
+            entry["unauthorized_behavior"],
+            "fails_closed_zero_state_change"
+        );
+        let roles = entry["required_signers"].as_array().expect("roles");
+        assert!(!roles.is_empty());
+    }
+}
+
+#[test]
+fn initialize_requires_admin_auth_tree() {
+    let h = Harness::uninitialized();
+    let case = h.case(
+        "initialize",
+        &["admin"],
+        h.args((h.admin.clone(), h.policies())),
+    );
+    assert_auth_tree(&h, &case);
+    assert_eq!(UptoSessionContractClient::new(&h.env, &h.id).get_admin(), h.admin);
+}
+
+#[test]
+fn propose_admin_requires_admin_auth_tree() {
+    let h = Harness::initialized();
+    let case = h.case(
+        "propose_admin",
+        &["admin"],
+        h.args((h.pending_admin.clone(), 100_u32)),
+    );
+    assert_auth_tree(&h, &case);
+}
+
+#[test]
+fn accept_admin_requires_pending_admin_auth_tree() {
+    let h = Harness::initialized();
+    h.run_authorized(&h.case(
+        "propose_admin",
+        &["admin"],
+        h.args((h.pending_admin.clone(), 100_u32)),
+    ));
+    let case = h.case("accept_admin", &["pending_admin"], h.no_args());
+    assert_auth_tree(&h, &case);
+    let client = UptoSessionContractClient::new(&h.env, &h.id);
+    assert_eq!(client.get_admin(), h.pending_admin);
+}
+
+#[test]
+fn cancel_admin_rotation_requires_admin_auth_tree() {
+    let h = Harness::initialized();
+    h.run_authorized(&h.case(
+        "propose_admin",
+        &["admin"],
+        h.args((h.pending_admin.clone(), 100_u32)),
+    ));
+    let case = h.case("cancel_admin_rotation", &["admin"], h.no_args());
+    assert_auth_tree(&h, &case);
+}
+
+#[test]
+fn pause_creation_requires_admin_auth_tree() {
+    let h = Harness::initialized();
+    assert_auth_tree(&h, &h.case("pause_creation", &["admin"], h.no_args()));
+}
+
+#[test]
+fn resume_creation_requires_admin_auth_tree() {
+    let h = Harness::initialized();
+    h.run_authorized(&h.case("pause_creation", &["admin"], h.no_args()));
+    assert_auth_tree(&h, &h.case("resume_creation", &["admin"], h.no_args()));
+}
+
+#[test]
+fn activate_asset_requires_admin_auth_tree() {
+    let h = Harness::initialized();
+    let second_asset = h.new_asset();
+    let case = h.case(
+        "activate_asset",
+        &["admin"],
+        h.args((h.policy_for(&second_asset),)),
+    );
+    assert_auth_tree(&h, &case);
+}
+
+#[test]
+fn deprecate_asset_requires_admin_auth_tree() {
+    let h = Harness::initialized();
+    let reason = BytesN::from_array(&h.env, &[7; 32]);
+    let case = h.case(
+        "deprecate_asset",
+        &["admin"],
+        h.args((h.asset.clone(), reason)),
+    );
+    assert_auth_tree(&h, &case);
+}
+
+#[test]
+fn remove_asset_requires_admin_auth_tree() {
+    let h = Harness::initialized();
+    let reason = BytesN::from_array(&h.env, &[7; 32]);
+    h.run_authorized(&h.case(
+        "deprecate_asset",
+        &["admin"],
+        h.args((h.asset.clone(), reason.clone())),
+    ));
+    let case = h.case(
+        "remove_asset",
+        &["admin"],
+        h.args((h.asset.clone(), reason)),
+    );
+    assert_auth_tree(&h, &case);
+}
+
+#[test]
+fn asset_cap_and_ceiling_setters_require_admin_auth_trees() {
+    let h = Harness::initialized();
+    assert_auth_tree(
+        &h,
+        &h.case(
+            "set_asset_max_session_amount",
+            &["admin"],
+            h.args((h.asset.clone(), 400_i128)),
+        ),
+    );
+    for method in [
+        "set_asset_exposure_ceiling",
+        "set_buyer_exposure_ceiling",
+        "set_seller_exposure_ceiling",
+    ] {
+        assert_auth_tree(
+            &h,
+            &h.case(method, &["admin"], h.args((h.asset.clone(), 5_000_i128))),
+        );
+    }
+}
+
+#[test]
+fn open_session_limit_setters_require_admin_auth_trees() {
+    let h = Harness::initialized();
+    for method in ["set_max_buyer_open_sessions", "set_max_seller_open_sessions"] {
+        assert_auth_tree(&h, &h.case(method, &["admin"], h.args((3_u32,))));
+    }
+}
+
+#[test]
+fn propose_asset_cap_increase_requires_admin_auth_tree() {
+    let h = Harness::initialized();
+    let case = h.case(
+        "propose_asset_cap_increase",
+        &["admin"],
+        h.args((h.asset.clone(), 1_000_i128, 200_u32, 300_u32)),
+    );
+    assert_auth_tree(&h, &case);
+}
+
+#[test]
+fn accept_asset_cap_increase_requires_admin_auth_tree() {
+    let h = Harness::initialized();
+    h.run_authorized(&h.case(
+        "propose_asset_cap_increase",
+        &["admin"],
+        h.args((h.asset.clone(), 1_000_i128, 200_u32, 300_u32)),
+    ));
+    h.set_ledger(250);
+    let case = h.case(
+        "accept_asset_cap_increase",
+        &["admin"],
+        h.args((h.asset.clone(),)),
+    );
+    assert_auth_tree(&h, &case);
+}
+
+#[test]
+fn cancel_asset_cap_increase_requires_admin_auth_tree() {
+    let h = Harness::initialized();
+    h.run_authorized(&h.case(
+        "propose_asset_cap_increase",
+        &["admin"],
+        h.args((h.asset.clone(), 1_000_i128, 200_u32, 300_u32)),
+    ));
+    let case = h.case(
+        "cancel_asset_cap_increase",
+        &["admin"],
+        h.args((h.asset.clone(),)),
+    );
+    assert_auth_tree(&h, &case);
+}
+
+#[test]
+fn recover_surplus_requires_admin_auth_tree_and_moves_no_funds_when_unauthorized() {
+    let h = Harness::initialized();
+    h.mint(&h.id, 50);
+    let case = h.case(
+        "recover_surplus",
+        &["admin"],
+        h.args((h.asset.clone(), h.recipient.clone(), 50_i128)),
+    );
+    assert_auth_tree(&h, &case);
+    assert_eq!(h.balance(&h.asset, &h.recipient), 50);
+    assert_eq!(h.balance(&h.asset, &h.id), 0);
+}
+
+#[test]
+fn create_session_requires_buyer_auth_with_asset_transfer_sub_invocation() {
+    let h = Harness::initialized();
+    let key = BytesN::from_array(&h.env, &[200; 32]);
+    let case = h.create_session_case(&key);
+    assert_auth_tree(&h, &case);
+    assert_eq!(h.balance(&h.asset, &h.buyer), 9_500);
+    assert_eq!(h.balance(&h.asset, &h.id), SESSION_AMOUNT);
+    let client = UptoSessionContractClient::new(&h.env, &h.id);
+    assert_eq!(client.get_escrow_liability(&h.asset), SESSION_AMOUNT);
+}
+
+#[test]
+fn unauthorized_create_session_leaves_balances_and_liability_untouched() {
+    let h = Harness::initialized();
+    let key = BytesN::from_array(&h.env, &[201; 32]);
+    let case = h.create_session_case(&key);
+    let root = h.node(case.method, case.args.clone(), case.sub.clone());
+    let attacker_auths = [(h.attacker.clone(), root)];
+    assert!(h.call(case.method, &case.args, &attacker_auths).is_none());
+    let client = UptoSessionContractClient::new(&h.env, &h.id);
+    assert_eq!(h.balance(&h.asset, &h.buyer), 10_000);
+    assert_eq!(h.balance(&h.asset, &h.id), 0);
+    assert_eq!(client.get_escrow_liability(&h.asset), 0);
+    assert_eq!(client.get_session_state_counts().open, 0);
+}
+
+#[test]
+fn settle_requires_seller_auth_tree() {
+    let mut h = Harness::initialized();
+    let session_id = h.create_session();
+    let usage_hash = BytesN::from_array(&h.env, &[42; 32]);
+    let case = h.case(
+        "settle",
+        &["seller"],
+        h.args((session_id.clone(), 125_i128, usage_hash)),
+    );
+    assert_auth_tree(&h, &case);
+    assert_eq!(h.balance(&h.asset, &h.seller), 125);
+    assert_eq!(h.balance(&h.asset, &h.buyer), 9_875);
+    assert_eq!(h.balance(&h.asset, &h.id), 0);
+}
+
+#[test]
+fn cancel_requires_buyer_auth_tree_and_rejects_the_seller() {
+    let mut h = Harness::initialized();
+    let session_id = h.create_session();
+    let case = h.case("cancel", &["buyer"], h.args((session_id,)));
+    // `assert_auth_tree` includes the seller among the rejected wrong signers.
+    assert_auth_tree(&h, &case);
+    assert_eq!(h.balance(&h.asset, &h.buyer), 10_000);
+    assert_eq!(h.balance(&h.asset, &h.id), 0);
+}
+
+#[test]
+fn reduce_session_cap_requires_buyer_auth_tree() {
+    let mut h = Harness::initialized();
+    let session_id = h.create_session();
+    let case = h.case(
+        "reduce_session_cap",
+        &["buyer"],
+        h.args((session_id, 100_i128)),
+    );
+    assert_auth_tree(&h, &case);
+    assert_eq!(h.balance(&h.asset, &h.id), 100);
+}
+
+#[test]
+fn reject_requires_seller_auth_tree() {
+    let mut h = Harness::initialized();
+    let session_id = h.create_session();
+    let case = h.case("reject", &["seller"], h.args((session_id,)));
+    assert_auth_tree(&h, &case);
+    assert_eq!(h.balance(&h.asset, &h.buyer), 10_000);
+}
+
+#[test]
+fn extend_session_expiry_requires_both_buyer_and_seller_auth_tree() {
+    let mut h = Harness::initialized();
+    let session_id = h.create_session();
+    let case = h.case(
+        "extend_session_expiry",
+        &["buyer", "seller"],
+        h.args((session_id.clone(), 80_u32)),
+    );
+    assert_auth_tree(&h, &case);
+    let client = UptoSessionContractClient::new(&h.env, &h.id);
+    assert_eq!(client.get_session(&session_id).expires_at_ledger, 80);
+}
+
+#[test]
+fn recover_expired_is_permissionless() {
+    let mut h = Harness::initialized();
+    let session_id = h.create_session();
+    h.set_ledger(SESSION_EXPIRY + 10);
+    let case = h.case("recover_expired", &[], h.args((session_id,)));
+    assert_permissionless(&h, &case);
+    assert_eq!(h.balance(&h.asset, &h.buyer), 10_000);
+    assert_eq!(h.balance(&h.asset, &h.id), 0);
+}
+
+#[test]
+fn recover_expired_batch_is_permissionless() {
+    let mut h = Harness::initialized();
+    let session_id = h.create_session();
+    h.set_ledger(SESSION_EXPIRY + 10);
+    let ids = soroban_sdk::vec![&h.env, session_id];
+    let case = h.case("recover_expired_batch", &[], h.args((ids,)));
+    assert_permissionless(&h, &case);
+    assert_eq!(h.balance(&h.asset, &h.buyer), 10_000);
+}
+
+#[test]
+fn extend_ttl_is_permissionless() {
+    let mut h = Harness::initialized();
+    let session_id = h.create_session();
+    let case = h.case("extend_ttl", &[], h.args((session_id,)));
+    assert_permissionless(&h, &case);
+}
+
+#[test]
+fn mismatched_expected_trees_are_not_normalized_away() {
+    let h = Harness::initialized();
+    let key = BytesN::from_array(&h.env, &[202; 32]);
+    let case = h.create_session_case(&key);
+    h.run_authorized(&case);
+    let recorded = h.env.auths();
+    let root = h.node(case.method, case.args.clone(), case.sub.clone());
+    let exact = std::vec![(h.buyer.clone(), root.expected(&h.env))];
+    assert_eq!(recorded, exact);
+
+    let mut without_sub = root.clone();
+    without_sub.sub = None;
+    assert_ne!(
+        recorded,
+        std::vec![(h.buyer.clone(), without_sub.expected(&h.env))],
+        "dropping the token transfer sub-invocation must be detected"
+    );
+    assert_ne!(
+        recorded,
+        std::vec![(h.seller.clone(), root.expected(&h.env))],
+        "a different signer must be detected"
+    );
+    let mut extra = exact.clone();
+    extra.push((h.attacker.clone(), root.expected(&h.env)));
+    assert_ne!(recorded, extra, "an unexpected extra authorization must be detected");
+    let mut wrong_function = root;
+    wrong_function.fn_name = "settle";
+    assert_ne!(
+        recorded,
+        std::vec![(h.buyer.clone(), wrong_function.expected(&h.env))],
+        "a different function must be detected"
+    );
 }

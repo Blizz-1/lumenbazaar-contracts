@@ -29,6 +29,18 @@ fn hash(env: &Env, value: u8) -> BytesN<32> {
     BytesN::from_array(env, &[value; 32])
 }
 
+fn next_idempotency_key(env: &Env) -> BytesN<32> {
+    static NEXT_KEY: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(1);
+    let seq = NEXT_KEY.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+    let mut bytes = [0x60u8; 32];
+    bytes[24..32].copy_from_slice(&seq.to_be_bytes());
+    BytesN::from_array(env, &bytes)
+}
+
+fn reason(env: &Env, tag: u8) -> BytesN<32> {
+    BytesN::from_array(env, &[tag; 32])
+}
+
 fn policy(
     asset: &Address,
     max_session_amount: i128,
@@ -83,6 +95,9 @@ fn fixture() -> Fixture {
 }
 
 fn open(f: &Fixture, buyer: &Address, asset: &Address, amount: i128, salt: u8) -> BytesN<32> {
+    let tag = hash(&f.env, salt);
+    f.client
+        .create_session(buyer, &f.seller, asset, &amount, &50, &tag, &tag)
     f.client.create_session(
         buyer,
         &f.seller,
@@ -90,7 +105,7 @@ fn open(f: &Fixture, buyer: &Address, asset: &Address, amount: i128, salt: u8) -
         &amount,
         &50,
         &hash(&f.env, salt),
-        &hash(&f.env, salt),
+        &next_idempotency_key(&f.env),
     )
 }
 
@@ -101,6 +116,11 @@ fn try_open(
     amount: i128,
     salt: u8,
 ) -> Result<BytesN<32>, ContractError> {
+    let tag = hash(&f.env, salt);
+    match f
+        .client
+        .try_create_session(buyer, &f.seller, asset, &amount, &50, &tag, &tag)
+    {
     match f.client.try_create_session(
         buyer,
         &f.seller,
@@ -108,7 +128,7 @@ fn try_open(
         &amount,
         &50,
         &hash(&f.env, salt),
-        &hash(&f.env, salt),
+        &next_idempotency_key(&f.env),
     ) {
         Ok(Ok(id)) => Ok(id),
         Err(Ok(error)) => Err(error),
@@ -251,6 +271,7 @@ fn asset_ceiling_is_exact_and_checked_before_authorization_or_transfer() {
         &50,
         &hash(&env, 1),
         &hash(&env, 1),
+        &next_idempotency_key(&env),
     );
     client.create_session(
         &buyer,
@@ -260,6 +281,7 @@ fn asset_ceiling_is_exact_and_checked_before_authorization_or_transfer() {
         &50,
         &hash(&env, 2),
         &hash(&env, 2),
+        &next_idempotency_key(&env),
     );
     assert_eq!(client.get_escrow_liability(&asset), 300);
 
@@ -273,7 +295,8 @@ fn asset_ceiling_is_exact_and_checked_before_authorization_or_transfer() {
             &1,
             &50,
             &hash(&env, 3),
-            &hash(&env, 3)
+            &hash(&env, 3),
+            &next_idempotency_key(&env),
         ),
         Err(Ok(ContractError::AssetExposureCeilingExceeded))
     );
@@ -427,7 +450,8 @@ fn deprecated_assets_reject_creation_but_still_release_capacity() {
     f.client
         .initialize(&f.admin, &vec![&f.env, policy(&asset, 500, 500, 500)]);
     let session = open(&f, &buyer, &asset, 200, 1);
-    f.client.deprecate_asset(&asset, &hash(&f.env, 91));
+    f.client.deprecate_asset(&asset, &hash(&f.env, 9));
+    f.client.deprecate_asset(&asset, &reason(&f.env, 0xda));
     assert_eq!(
         try_open(&f, &buyer, &asset, 1, 2),
         Err(ContractError::UnsupportedAsset)
@@ -438,7 +462,8 @@ fn deprecated_assets_reject_creation_but_still_release_capacity() {
     f.env.as_contract(&f.contract_id, || {
         assert_eq!(storage::read_liability(&f.env, &asset), 0);
     });
-    f.client.remove_asset(&asset, &hash(&f.env, 92));
+    f.client.remove_asset(&asset, &hash(&f.env, 9));
+    f.client.remove_asset(&asset, &reason(&f.env, 0xdb));
     assert_eq!(
         f.client.try_get_buyer_exposure(&buyer, &asset),
         Err(Ok(ContractError::UnsupportedAsset))
@@ -502,6 +527,7 @@ fn buyer_ceiling_is_checked_before_buyer_authorization() {
         &50,
         &hash(&env, 1),
         &hash(&env, 1),
+        &next_idempotency_key(&env),
     );
 
     env.set_auths(&[]);
@@ -513,7 +539,8 @@ fn buyer_ceiling_is_checked_before_buyer_authorization() {
             &1,
             &50,
             &hash(&env, 2),
-            &hash(&env, 2)
+            &hash(&env, 2),
+            &next_idempotency_key(&env),
         ),
         Err(Ok(ContractError::BuyerExposureCeilingExceeded))
     );
@@ -816,7 +843,8 @@ fn solvency_is_read_only_authorization_free_and_covers_deprecated_assets() {
     f.client
         .initialize(&f.admin, &vec![&f.env, policy(&asset, 100, 100, 100)]);
     let session = open(&f, &buyer, &asset, 100, 1);
-    f.client.deprecate_asset(&asset, &hash(&f.env, 93));
+    f.client.deprecate_asset(&asset, &hash(&f.env, 9));
+    f.client.deprecate_asset(&asset, &reason(&f.env, 0xdc));
 
     f.env.set_auths(&[]);
     let first = snapshot(&f, &asset);
@@ -834,7 +862,8 @@ fn solvency_is_read_only_authorization_free_and_covers_deprecated_assets() {
 
     f.env.mock_all_auths_allowing_non_root_auth();
     f.client.cancel(&session);
-    f.client.remove_asset(&asset, &hash(&f.env, 94));
+    f.client.remove_asset(&asset, &hash(&f.env, 9));
+    f.client.remove_asset(&asset, &reason(&f.env, 0xdd));
     assert_eq!(
         f.client.try_get_asset_solvency(&asset),
         Err(Ok(ContractError::UnsupportedAsset))

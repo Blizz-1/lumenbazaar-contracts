@@ -18,6 +18,13 @@ Deployment manifests are written here by the repo scripts.
 
 For testnet:
 
+Deployment is fail closed. Set `LUMENBAZAAR_EXPECTED_WASM_HASHES` to a JSON
+map of contract names to reviewed lowercase SHA-256 values. Set
+`LUMENBAZAAR_TRUSTED_RPC_URL` to an independent HTTPS testnet RPC endpoint and
+optionally `LUMENBAZAAR_MAX_RPC_LEDGER_LAG` (default `2`). A `--dry-run` writes
+`testnet-plan.json` without signing or submitting. The canonical `planSha256`
+is copied into the final manifest so reviewers can compare plan and evidence.
+
 1. Copy `.env.testnet.example` to `.env.testnet` or export the same variables in your shell.
 2. Run `node scripts/testnet/deploy-testnet.mjs` (optionally `--contracts upto-session,test-token`).
 3. Run `node scripts/testnet/initialize-testnet.mjs`.
@@ -27,21 +34,60 @@ For testnet:
 
 Validate committed public evidence with `node scripts/check-deployment-evidence.mjs`.
 
-## Pre-signing network passphrase verification
+## Atomic local manifest writes
 
-Before constructing, authorizing, or signing any deployment or initialization transaction, scripts
-resolve the target network's passphrase and compare both the exact passphrase string and its SHA-256
-network ID against the expected identity (`scripts/lib/stellar-cli.mjs`).
+Local deployment manifests (`deployments/local.json`, `deployments/testnet.json`, and
+`deployments/testnet-evidence.json`) are written atomically through `scripts/lib/atomic-manifest.mjs`
+(used by `writeManifest` and `mergeContracts` in `scripts/lib/stellar-cli.mjs`):
 
-- Known aliases have canonical expected passphrases:
-  - `testnet`: `Test SDF Network ; September 2015`
-  - `local` / `standalone`: `Standalone Network ; February 2017`
-  - `futurenet`: `Test SDF Future Network ; October 2022`
-  - `mainnet`: `Public Global Stellar Network ; September 2015`
-- Custom network aliases require an explicit expected passphrase via `STELLAR_NETWORK_PASSPHRASE`
-  or `LUMENBAZAAR_EXPECTED_NETWORK_PASSPHRASE`.
-- Identity is never inferred from RPC hostnames or URLs, and signing material is never logged. Any
-  passphrase or network-ID mismatch aborts before account authorization or submission.
+- Before any file is modified, schema validation and secret scanning run (rejecting Stellar secret
+  seeds, mnemonic phrases, raw 64-hex private keys outside hash fields, signed XDR envelopes, and
+  configured secret environment values without echoing the secret).
+- An exclusive `.lock` file prevents concurrent writers from racing; if a lock file already exists
+  the write fails explicitly with `ManifestConcurrencyError`.
+- `mergeContracts` and callers passing `expectedSnapshot` enforce optimistic concurrency control and
+  fail explicitly with `ManifestStaleWriteError` if the target file changed since it was read.
+- Output is written to a validated temporary file in the same directory, flushed with `fsync`,
+  re-verified by SHA-256 and JSON parse, and atomically renamed over the exact target path (with
+  bounded retry for transient `EPERM`/`EACCES`/`EBUSY` handles on Windows). Existing valid manifests
+  survive failed updates, and temporary/lock files are cleaned up on failure.
+
+Run the atomic manifest tests with:
+
+```bash
+node --test scripts/lib/atomic-manifest.test.mjs scripts/lib/stellar-cli.test.mjs
+```
+
+## Resumable testnet deployments
+
+`scripts/testnet/deploy-testnet.mjs` maintains an ignored, atomically updated journal at
+`deployments/testnet.deploy-journal.json` (overridable with `--journal <path>`). Each contract's
+upload and deploy step is checkpointed as soon as its transaction receipt is recorded.
+
+```bash
+node scripts/testnet/deploy-testnet.mjs                 # fresh deployment
+node scripts/testnet/deploy-testnet.mjs --resume        # verify completed steps and resume
+node scripts/testnet/deploy-testnet.mjs --resume --journal deployments/custom.deploy-journal.json
+```
+
+When `--resume` is passed:
+
+- The script verifies the journal schema, testnet network and passphrase, source commit (`HEAD`),
+  deployer account, and selected contract list before submitting any transaction.
+- Every previously recorded step is verified against the current local WASM `artifactSha256` and
+  `interfaceSha256`, the testnet transaction receipt (status `SUCCESS`, expected deployer), and the
+  on-chain contract WASM hash (`stellar contract info hash`).
+- Verified completed uploads and deployments are never re-submitted.
+- Any corruption, wrong-network journal, hash mismatch, unverifiable receipt, or on-chain contract
+  mismatch stops execution immediately before any subsequent submission.
+- Starting a fresh run without `--resume` while an `in-progress` journal exists fails closed so an
+  interrupted deployment cannot be silently abandoned.
+
+Run the resumable deployment tests with:
+
+```bash
+node --test scripts/lib/deploy-journal.test.mjs
+```
 
 ## Generating public manifests
 
@@ -277,3 +323,16 @@ GitHub account, so that GitHub reports it as verified. Lightweight, unsigned or 
 release before anything is built. Never move or re-create a release tag. Protecting `testnet-wasm-*`
 tags with a repository ruleset (no updates or deletions) is recommended as well. The workflow cannot
 read rulesets with `GITHUB_TOKEN`, so the signature check is the enforced control.
+
+## Deployment preflight
+
+Run `node scripts/testnet/preflight-testnet.mjs` (optionally `--dry-run`, `--contracts <list>`, `--json`) before deploying. It is read-only: it never submits transactions or funds accounts. `deploy-testnet.mjs` runs the same checks first and exits 1 on failure. Output is redacted.
+
+| Category | Checks |
+| --- | --- |
+| `[CONFIGURATION]` | `STELLAR_NETWORK=testnet`, source account (`LUMENBAZAAR_SOURCE_ACCOUNT` or `STELLAR_ACCOUNT`), `LUMENBAZAAR_EXPECTED_WASM_HASHES` (lowercase SHA-256 per contract), HTTPS `LUMENBAZAAR_TRUSTED_RPC_URL` distinct from the primary RPC, optional `LUMENBAZAAR_MIN_SOURCE_BALANCE_XLM` (default 10) |
+| `[NETWORK]` | Primary RPC reachable, testnet passphrase, ledger lag against the trusted RPC within `LUMENBAZAAR_MAX_RPC_LEDGER_LAG` |
+| `[FUNDING]` | Source account exists on testnet and holds at least the minimum XLM |
+| `[ARTIFACTS]` | Each WASM in `target/wasm32v1-none/release/` exists and matches the reviewed SHA-256 |
+
+`--dry-run` reports synthetic network, funding and artifact results and needs no network or built artifacts.

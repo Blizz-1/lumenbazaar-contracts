@@ -1632,6 +1632,35 @@
   {
     "function_v0": {
       "doc": "",
+      "inputs": [
+        {
+          "doc": "",
+          "name": "buyer",
+          "type": "address"
+        }
+      ],
+      "name": "get_buyer_session_count",
+      "outputs": [
+        {
+          "result": {
+            "error_type": {
+              "udt": {
+                "name": "ContractError"
+              }
+            },
+            "ok_type": {
+              "udt": {
+                "name": "BuyerSessionCount"
+              }
+            }
+          }
+        }
+      ]
+    }
+  },
+  {
+    "function_v0": {
+      "doc": "",
       "inputs": [],
       "name": "get_commitment_domain_metadata",
       "outputs": [
@@ -1686,6 +1715,29 @@
               }
             },
             "ok_type": "i128"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "function_v0": {
+      "doc": "",
+      "inputs": [],
+      "name": "get_initialization_digest",
+      "outputs": [
+        {
+          "result": {
+            "error_type": {
+              "udt": {
+                "name": "ContractError"
+              }
+            },
+            "ok_type": {
+              "bytes_n": {
+                "n": 32
+              }
+            }
           }
         }
       ]
@@ -1829,6 +1881,35 @@
       "inputs": [
         {
           "doc": "",
+          "name": "seller",
+          "type": "address"
+        }
+      ],
+      "name": "get_seller_session_counts",
+      "outputs": [
+        {
+          "result": {
+            "error_type": {
+              "udt": {
+                "name": "ContractError"
+              }
+            },
+            "ok_type": {
+              "udt": {
+                "name": "SessionStateCounts"
+              }
+            }
+          }
+        }
+      ]
+    }
+  },
+  {
+    "function_v0": {
+      "doc": "",
+      "inputs": [
+        {
+          "doc": "",
           "name": "session_id",
           "type": {
             "bytes_n": {
@@ -1900,6 +1981,29 @@
   {
     "function_v0": {
       "doc": "",
+      "inputs": [],
+      "name": "get_session_state_counts",
+      "outputs": [
+        {
+          "result": {
+            "error_type": {
+              "udt": {
+                "name": "ContractError"
+              }
+            },
+            "ok_type": {
+              "udt": {
+                "name": "SessionStateCounts"
+              }
+            }
+          }
+        }
+      ]
+    }
+  },
+  {
+    "function_v0": {
+      "doc": "",
       "inputs": [
         {
           "doc": "",
@@ -1960,6 +2064,122 @@
                     "name": "AssetSolvency"
                   }
                 }
+              }
+            }
+          }
+        }
+      ]
+    }
+  },
+  {
+    "function_v0": {
+      "doc": "",
+      "inputs": [
+        {
+          "doc": "",
+          "name": "kind",
+          "type": {
+            "udt": {
+              "name": "CommitmentKind"
+            }
+          }
+        },
+        {
+          "doc": "",
+          "name": "commitment",
+          "type": {
+            "bytes_n": {
+              "n": 32
+            }
+          }
+        }
+      ],
+      "name": "get_sessions_by_commitment",
+      "outputs": [
+        {
+          "result": {
+            "error_type": {
+              "udt": {
+                "name": "ContractError"
+              }
+            },
+            "ok_type": {
+              "vec": {
+                "element_type": {
+                  "bytes_n": {
+                    "n": 32
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    }
+  },
+  {
+    "function_v0": {
+      "doc": "Read-only solvency snapshot for a caller-supplied list of one to\\n`MAX_SOLVENCY_QUERY_ASSETS` assets. Results preserve input order.\\nDuplicates are evaluated independently and returned once per\\noccurrence. Assets unknown to this deployment are reported as\\n`Unknown` with zero values and are never called, so arbitrary\\ncontracts cannot be invoked. `surplus` is `balance - liability`\\n(negative when underfunded).",
+      "inputs": [
+        {
+          "doc": "",
+          "name": "assets",
+          "type": {
+            "vec": {
+              "element_type": "address"
+            }
+          }
+        }
+      ],
+      "name": "get_solvency",
+      "outputs": [
+        {
+          "result": {
+            "error_type": {
+              "udt": {
+                "name": "ContractError"
+              }
+            },
+            "ok_type": {
+              "vec": {
+                "element_type": {
+                  "udt": {
+                    "name": "AssetSolvency"
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    }
+  },
+  {
+    "function_v0": {
+      "doc": "",
+      "inputs": [
+        {
+          "doc": "",
+          "name": "session_id",
+          "type": {
+            "bytes_n": {
+              "n": 32
+            }
+          }
+        }
+      ],
+      "name": "get_terminal_evidence",
+      "outputs": [
+        {
+          "result": {
+            "error_type": {
+              "udt": {
+                "name": "ContractError"
+              }
+            },
+            "ok_type": {
+              "udt": {
+                "name": "TerminalEvidence"
               }
             }
           }
@@ -2767,118 +2987,138 @@
         },
         {
           "doc": "",
-          "name": "CapIncreasePending",
+          "name": "AssetAlreadyActive",
           "value": 38
         },
         {
           "doc": "",
-          "name": "CapIncreaseNotReady",
+          "name": "AssetDeprecated",
           "value": 39
         },
         {
           "doc": "",
-          "name": "CapIncreaseNotFound",
+          "name": "AssetLimitReached",
           "value": 40
         },
         {
           "doc": "",
-          "name": "CapIncreaseExpired",
+          "name": "AssetExposureCeilingExceeded",
           "value": 41
         },
         {
           "doc": "",
-          "name": "InvalidCapIncreaseDelay",
+          "name": "InvalidExposureCeiling",
           "value": 42
         },
         {
           "doc": "",
-          "name": "UnsupportedCommitmentScheme",
+          "name": "ExposureCeilingNotConfigured",
           "value": 43
         },
         {
           "doc": "",
-          "name": "SellerExposureCeilingExceeded",
+          "name": "BuyerExposureCeilingExceeded",
           "value": 44
         },
         {
           "doc": "",
-          "name": "SellerExposureCeilingNotConfigured",
+          "name": "BuyerExposureUnderflow",
           "value": 45
         },
         {
           "doc": "",
-          "name": "BuyerOpenSessionsExceeded",
+          "name": "SequenceExhausted",
           "value": 46
         },
         {
           "doc": "",
-          "name": "InvalidSessionCountLimit",
+          "name": "IdempotencyConflict",
           "value": 47
         },
         {
           "doc": "",
-          "name": "SellerOpenSessionsExceeded",
+          "name": "SellerExposureCeilingExceeded",
           "value": 48
         },
         {
           "doc": "",
-          "name": "InvalidCapReduction",
+          "name": "SellerExposureCeilingNotConfigured",
           "value": 49
         },
         {
           "doc": "",
-          "name": "SessionRejected",
+          "name": "BuyerOpenSessionsExceeded",
           "value": 50
         },
         {
           "doc": "",
-          "name": "AssetAlreadyActive",
+          "name": "InvalidSessionCountLimit",
           "value": 51
         },
         {
           "doc": "",
-          "name": "AssetDeprecated",
+          "name": "SellerOpenSessionsExceeded",
           "value": 52
         },
         {
           "doc": "",
-          "name": "AssetLimitReached",
+          "name": "InvalidCapReduction",
           "value": 53
         },
         {
           "doc": "",
-          "name": "AssetExposureCeilingExceeded",
+          "name": "SessionRejected",
           "value": 54
         },
         {
           "doc": "",
-          "name": "InvalidExposureCeiling",
+          "name": "CapIncreasePending",
           "value": 55
         },
         {
           "doc": "",
-          "name": "ExposureCeilingNotConfigured",
+          "name": "CapIncreaseNotReady",
           "value": 56
         },
         {
           "doc": "",
-          "name": "BuyerExposureCeilingExceeded",
+          "name": "CapIncreaseNotFound",
           "value": 57
         },
         {
           "doc": "",
-          "name": "BuyerExposureUnderflow",
+          "name": "CapIncreaseExpired",
           "value": 58
         },
         {
           "doc": "",
-          "name": "SequenceExhausted",
+          "name": "InvalidCapIncreaseDelay",
           "value": 59
         },
         {
           "doc": "",
-          "name": "IdempotencyConflict",
+          "name": "UnsupportedCommitmentScheme",
           "value": 60
+        },
+        {
+          "doc": "",
+          "name": "CounterOverflow",
+          "value": 61
+        },
+        {
+          "doc": "",
+          "name": "CounterUnderflow",
+          "value": 62
+        },
+        {
+          "doc": "",
+          "name": "CommitmentIndexFull",
+          "value": 63
+        },
+        {
+          "doc": "",
+          "name": "InvalidStateTransition",
+          "value": 64
         }
       ],
       "doc": "",
@@ -3137,6 +3377,30 @@
       ],
       "lib": "",
       "name": "BatchSessionResult"
+    }
+  },
+  {
+    "udt_struct_v0": {
+      "doc": "",
+      "fields": [
+        {
+          "doc": "",
+          "name": "open",
+          "type": "u32"
+        },
+        {
+          "doc": "",
+          "name": "response_version",
+          "type": "u32"
+        },
+        {
+          "doc": "",
+          "name": "total",
+          "type": "u32"
+        }
+      ],
+      "lib": "",
+      "name": "BuyerSessionCount"
     }
   },
   {
@@ -3446,6 +3710,45 @@
       "fields": [
         {
           "doc": "",
+          "name": "cancelled",
+          "type": "u64"
+        },
+        {
+          "doc": "",
+          "name": "expired",
+          "type": "u64"
+        },
+        {
+          "doc": "",
+          "name": "open",
+          "type": "u64"
+        },
+        {
+          "doc": "",
+          "name": "rejected",
+          "type": "u64"
+        },
+        {
+          "doc": "",
+          "name": "response_version",
+          "type": "u32"
+        },
+        {
+          "doc": "",
+          "name": "settled",
+          "type": "u64"
+        }
+      ],
+      "lib": "",
+      "name": "SessionStateCounts"
+    }
+  },
+  {
+    "udt_struct_v0": {
+      "doc": "",
+      "fields": [
+        {
+          "doc": "",
           "name": "exists",
           "type": "bool"
         },
@@ -3509,6 +3812,57 @@
       ],
       "lib": "",
       "name": "SettlementPreview"
+    }
+  },
+  {
+    "udt_struct_v0": {
+      "doc": "",
+      "fields": [
+        {
+          "doc": "",
+          "name": "digest",
+          "type": {
+            "bytes_n": {
+              "n": 32
+            }
+          }
+        },
+        {
+          "doc": "",
+          "name": "evidence_version",
+          "type": "u32"
+        },
+        {
+          "doc": "",
+          "name": "finalized_ledger",
+          "type": "u32"
+        },
+        {
+          "doc": "",
+          "name": "status",
+          "type": {
+            "udt": {
+              "name": "SessionStatus"
+            }
+          }
+        },
+        {
+          "doc": "",
+          "name": "usage_hash",
+          "type": {
+            "option": {
+              "value_type": {
+                "bytes_n": {
+                  "n": 32
+                }
+              }
+            }
+          }
+        }
+      ],
+      "doc": "",
+      "lib": "",
+      "name": "TerminalEvidenceDigest"
     }
   },
   {
@@ -3648,6 +4002,27 @@
       "doc": "",
       "lib": "",
       "name": "BatchSessionStatus"
+    }
+  },
+  {
+    "udt_union_v0": {
+      "cases": [
+        {
+          "void_v0": {
+            "doc": "",
+            "name": "Resource"
+          }
+        },
+        {
+          "void_v0": {
+            "doc": "",
+            "name": "Usage"
+          }
+        }
+      ],
+      "doc": "",
+      "lib": "",
+      "name": "CommitmentKind"
     }
   },
   {
@@ -3894,6 +4269,34 @@
       "doc": "",
       "lib": "",
       "name": "SolvencyStatus"
+    }
+  },
+  {
+    "udt_union_v0": {
+      "cases": [
+        {
+          "void_v0": {
+            "doc": "",
+            "name": "Nonterminal"
+          }
+        },
+        {
+          "tuple_v0": {
+            "doc": "",
+            "name": "Terminal",
+            "type": [
+              {
+                "udt": {
+                  "name": "TerminalEvidenceDigest"
+                }
+              }
+            ]
+          }
+        }
+      ],
+      "doc": "",
+      "lib": "",
+      "name": "TerminalEvidence"
     }
   }
 ]

@@ -5,455 +5,461 @@
 //! `docs/escrow-invariants.md` identifies the implementation tests that cover
 //! each modeled action.
 
+pub const MAX_DEPTH: usize = 7;
+pub const EXPIRY_LEDGER: u8 = 2;
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum Status {
+    Absent,
+    Open,
+    Settled,
+    Cancelled,
+    Expired,
+    Rejected,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum AssetState {
+    Absent,
+    Active,
+    Deprecated,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct State {
+    pub initialized: bool,
+    pub admin: u8,
+    pub pending_admin: Option<u8>,
+    pub admin_rotation_expiry: u8,
+    pub asset_state: AssetState,
+    pub status: Status,
+    pub ledger: u8,
+    pub cap: u8,
+    pub contract_balance: u8,
+    pub liability: u8,
+    pub seller_paid: u8,
+    pub buyer_refunded: u8,
+    pub other_refunded: u8,
+    pub deposited: u8,
+    pub terminal_transitions: u8,
+}
+
+impl Default for State {
+    fn default() -> Self {
+        Self {
+            initialized: false,
+            admin: 0,
+            pending_admin: None,
+            admin_rotation_expiry: 0,
+            asset_state: AssetState::Absent,
+            status: Status::Absent,
+            ledger: 0,
+            cap: 0,
+            contract_balance: 0,
+            liability: 0,
+            seller_paid: 0,
+            buyer_refunded: 0,
+            other_refunded: 0,
+            deposited: 0,
+            terminal_transitions: 0,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum Action {
+    Initialize {
+        admin_authorized: bool,
+    },
+    Create {
+        buyer_authorized: bool,
+        cap: u8,
+    },
+    Settle {
+        seller_authorized: bool,
+        amount: u8,
+    },
+    Cancel {
+        buyer_authorized: bool,
+    },
+    Reject {
+        seller_authorized: bool,
+    },
+    AdvanceToExpiry,
+    Recover,
+    DeprecateAsset {
+        caller: u8,
+    },
+    RemoveAsset {
+        caller: u8,
+    },
+    ProposeAdmin {
+        caller: u8,
+        pending: u8,
+        expires_at: u8,
+    },
+    AcceptAdmin {
+        caller: u8,
+    },
+    CancelAdminRotation {
+        caller: u8,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum Rejection {
+    Unauthorized,
+    InvalidState,
+    InvalidAmount,
+    Expired,
+    NotExpired,
+    UnsupportedAsset,
+    AssetNotActive,
+    AssetNotDeprecated,
+    AssetLiabilityOutstanding,
+    AdminRotationPending,
+    AdminRotationNotFound,
+    AdminRotationExpired,
+    InvalidAdmin,
+    InvalidAdminRotationExpiry,
+}
+
+pub const ACTIONS: [Action; 29] = [
+    Action::Initialize {
+        admin_authorized: false,
+    },
+    Action::Initialize {
+        admin_authorized: true,
+    },
+    Action::Create {
+        buyer_authorized: false,
+        cap: 1,
+    },
+    Action::Create {
+        buyer_authorized: true,
+        cap: 0,
+    },
+    Action::Create {
+        buyer_authorized: true,
+        cap: 1,
+    },
+    Action::Create {
+        buyer_authorized: true,
+        cap: 2,
+    },
+    Action::Settle {
+        seller_authorized: false,
+        amount: 1,
+    },
+    Action::Settle {
+        seller_authorized: true,
+        amount: 0,
+    },
+    Action::Settle {
+        seller_authorized: true,
+        amount: 1,
+    },
+    Action::Settle {
+        seller_authorized: true,
+        amount: 2,
+    },
+    Action::Settle {
+        seller_authorized: true,
+        amount: 3,
+    },
+    Action::Cancel {
+        buyer_authorized: false,
+    },
+    Action::Cancel {
+        buyer_authorized: true,
+    },
+    Action::Reject {
+        seller_authorized: false,
+    },
+    Action::Reject {
+        seller_authorized: true,
+    },
+    Action::AdvanceToExpiry,
+    Action::Recover,
+    Action::Create {
+        buyer_authorized: false,
+        cap: 2,
+    },
+    Action::Settle {
+        seller_authorized: false,
+        amount: 2,
+    },
+    Action::DeprecateAsset { caller: 1 },
+    Action::DeprecateAsset { caller: 3 },
+    Action::RemoveAsset { caller: 1 },
+    Action::RemoveAsset { caller: 3 },
+    Action::ProposeAdmin {
+        caller: 1,
+        pending: 2,
+        expires_at: 2,
+    },
+    Action::ProposeAdmin {
+        caller: 3,
+        pending: 2,
+        expires_at: 2,
+    },
+    Action::AcceptAdmin { caller: 2 },
+    Action::AcceptAdmin { caller: 3 },
+    Action::CancelAdminRotation { caller: 1 },
+    Action::CancelAdminRotation { caller: 3 },
+];
+
+pub fn apply(state: &mut State, action: Action) -> Result<(), Rejection> {
+    match action {
+        Action::Initialize { admin_authorized } => {
+            if !admin_authorized {
+                return Err(Rejection::Unauthorized);
+            }
+            if state.initialized {
+                return Err(Rejection::InvalidState);
+            }
+            state.initialized = true;
+            state.admin = 1;
+            state.asset_state = AssetState::Active;
+        }
+        Action::Create {
+            buyer_authorized,
+            cap,
+        } => {
+            if !state.initialized || state.asset_state != AssetState::Active {
+                return Err(Rejection::UnsupportedAsset);
+            }
+            if !buyer_authorized {
+                return Err(Rejection::Unauthorized);
+            }
+            if state.status != Status::Absent {
+                return Err(Rejection::InvalidState);
+            }
+            if cap == 0 {
+                return Err(Rejection::InvalidAmount);
+            }
+            state.status = Status::Open;
+            state.cap = cap;
+            state.contract_balance = cap;
+            state.liability = cap;
+            state.deposited = cap;
+        }
+        Action::Settle {
+            seller_authorized,
+            amount,
+        } => {
+            require_open(state)?;
+            if state.ledger >= EXPIRY_LEDGER {
+                return Err(Rejection::Expired);
+            }
+            if !seller_authorized {
+                return Err(Rejection::Unauthorized);
+            }
+            if amount == 0 || amount > state.cap {
+                return Err(Rejection::InvalidAmount);
+            }
+            state.status = Status::Settled;
+            state.seller_paid = amount;
+            state.buyer_refunded = state.cap - amount;
+            finish_terminal_transition(state);
+        }
+        Action::Cancel { buyer_authorized } => {
+            require_open(state)?;
+            if state.ledger >= EXPIRY_LEDGER {
+                return Err(Rejection::Expired);
+            }
+            if !buyer_authorized {
+                return Err(Rejection::Unauthorized);
+            }
+            state.status = Status::Cancelled;
+            state.buyer_refunded = state.cap;
+            finish_terminal_transition(state);
+        }
+        Action::Reject { seller_authorized } => {
+            require_open(state)?;
+            if state.ledger >= EXPIRY_LEDGER {
+                return Err(Rejection::Expired);
+            }
+            if !seller_authorized {
+                return Err(Rejection::Unauthorized);
+            }
+            state.status = Status::Rejected;
+            state.buyer_refunded = state.cap;
+            finish_terminal_transition(state);
+        }
+        Action::AdvanceToExpiry => {
+            state.ledger = EXPIRY_LEDGER;
+        }
+        Action::Recover => {
+            require_open(state)?;
+            if state.ledger < EXPIRY_LEDGER {
+                return Err(Rejection::NotExpired);
+            }
+            state.status = Status::Expired;
+            state.buyer_refunded = state.cap;
+            finish_terminal_transition(state);
+        }
+        Action::DeprecateAsset { caller } => {
+            if !state.initialized {
+                return Err(Rejection::InvalidState);
+            }
+            if caller != state.admin {
+                return Err(Rejection::Unauthorized);
+            }
+            if state.asset_state != AssetState::Active {
+                return Err(Rejection::AssetNotActive);
+            }
+            state.asset_state = AssetState::Deprecated;
+        }
+        Action::RemoveAsset { caller } => {
+            if !state.initialized {
+                return Err(Rejection::InvalidState);
+            }
+            if caller != state.admin {
+                return Err(Rejection::Unauthorized);
+            }
+            if state.asset_state != AssetState::Deprecated {
+                return Err(Rejection::AssetNotDeprecated);
+            }
+            if state.liability != 0 {
+                return Err(Rejection::AssetLiabilityOutstanding);
+            }
+            state.asset_state = AssetState::Absent;
+        }
+        Action::ProposeAdmin {
+            caller,
+            pending,
+            expires_at,
+        } => {
+            if !state.initialized {
+                return Err(Rejection::InvalidState);
+            }
+            if caller != state.admin {
+                return Err(Rejection::Unauthorized);
+            }
+            if state.pending_admin.is_some() {
+                return Err(Rejection::AdminRotationPending);
+            }
+            if pending == 0 || pending == state.admin {
+                return Err(Rejection::InvalidAdmin);
+            }
+            if expires_at <= state.ledger {
+                return Err(Rejection::InvalidAdminRotationExpiry);
+            }
+            state.pending_admin = Some(pending);
+            state.admin_rotation_expiry = expires_at;
+        }
+        Action::AcceptAdmin { caller } => {
+            if !state.initialized {
+                return Err(Rejection::InvalidState);
+            }
+            let pending = state
+                .pending_admin
+                .ok_or(Rejection::AdminRotationNotFound)?;
+            if state.ledger >= state.admin_rotation_expiry {
+                return Err(Rejection::AdminRotationExpired);
+            }
+            if caller != pending {
+                return Err(Rejection::Unauthorized);
+            }
+            state.admin = pending;
+            state.pending_admin = None;
+            state.admin_rotation_expiry = 0;
+        }
+        Action::CancelAdminRotation { caller } => {
+            if !state.initialized {
+                return Err(Rejection::InvalidState);
+            }
+            if caller != state.admin {
+                return Err(Rejection::Unauthorized);
+            }
+            if state.pending_admin.is_none() {
+                return Err(Rejection::AdminRotationNotFound);
+            }
+            state.pending_admin = None;
+            state.admin_rotation_expiry = 0;
+        }
+    }
+    Ok(())
+}
+
+pub fn require_open(state: &State) -> Result<(), Rejection> {
+    if state.status == Status::Open {
+        Ok(())
+    } else {
+        Err(Rejection::InvalidState)
+    }
+}
+
+pub fn finish_terminal_transition(state: &mut State) {
+    state.contract_balance = 0;
+    state.liability = 0;
+    state.terminal_transitions += 1;
+}
+
+pub fn invariant_violation(state: &State) -> Option<&'static str> {
+    if state.terminal_transitions > 1 {
+        return Some("more than one terminal transition succeeded");
+    }
+    if state.seller_paid > state.cap {
+        return Some("seller payout exceeded the session cap");
+    }
+    if state.other_refunded != 0 {
+        return Some("refund was assigned to an address other than the buyer");
+    }
+    if state.contract_balance + state.seller_paid + state.buyer_refunded != state.deposited {
+        return Some("deposited value was not conserved");
+    }
+    match state.status {
+        Status::Absent => {
+            if state.deposited != 0 || state.liability != 0 {
+                return Some("absent session retained value or liability");
+            }
+        }
+        Status::Open => {
+            if state.liability != state.cap || state.contract_balance != state.cap {
+                return Some("open-session liability did not equal escrowed cap");
+            }
+        }
+        Status::Settled | Status::Cancelled | Status::Expired | Status::Rejected => {
+            if state.liability != 0
+                || state.contract_balance != 0
+                || state.terminal_transitions != 1
+            {
+                return Some("terminal session retained escrow or invalid transition count");
+            }
+        }
+    }
+    if state.asset_state == AssetState::Absent && state.initialized && state.liability != 0 {
+        return Some("removed asset retained liability");
+    }
+    if !state.initialized && (state.admin != 0 || state.asset_state != AssetState::Absent) {
+        return Some("uninitialized state had active admin or asset");
+    }
+    if state.initialized && state.admin == 0 {
+        return Some("initialized contract had no admin");
+    }
+    None
+}
+
+pub fn trace_text(trace: &[Action]) -> String {
+    trace
+        .iter()
+        .enumerate()
+        .map(|(index, action)| format!("{}. {action:?}", index + 1))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 #[cfg(test)]
 mod tests {
+    use super::*;
     use std::collections::{HashMap, VecDeque};
-
-    const MAX_DEPTH: usize = 7;
-    const EXPIRY_LEDGER: u8 = 2;
-
-    #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-    enum Status {
-        Absent,
-        Open,
-        Settled,
-        Cancelled,
-        Expired,
-        Rejected,
-    }
-
-    #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-    enum AssetState {
-        Absent,
-        Active,
-        Deprecated,
-    }
-
-    #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-    struct State {
-        initialized: bool,
-        admin: u8,
-        pending_admin: Option<u8>,
-        admin_rotation_expiry: u8,
-        asset_state: AssetState,
-        status: Status,
-        ledger: u8,
-        cap: u8,
-        contract_balance: u8,
-        liability: u8,
-        seller_paid: u8,
-        buyer_refunded: u8,
-        other_refunded: u8,
-        deposited: u8,
-        terminal_transitions: u8,
-    }
-
-    impl Default for State {
-        fn default() -> Self {
-            Self {
-                initialized: false,
-                admin: 0,
-                pending_admin: None,
-                admin_rotation_expiry: 0,
-                asset_state: AssetState::Absent,
-                status: Status::Absent,
-                ledger: 0,
-                cap: 0,
-                contract_balance: 0,
-                liability: 0,
-                seller_paid: 0,
-                buyer_refunded: 0,
-                other_refunded: 0,
-                deposited: 0,
-                terminal_transitions: 0,
-            }
-        }
-    }
-
-    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-    enum Action {
-        Initialize {
-            admin_authorized: bool,
-        },
-        Create {
-            buyer_authorized: bool,
-            cap: u8,
-        },
-        Settle {
-            seller_authorized: bool,
-            amount: u8,
-        },
-        Cancel {
-            buyer_authorized: bool,
-        },
-        Reject {
-            seller_authorized: bool,
-        },
-        AdvanceToExpiry,
-        Recover,
-        DeprecateAsset {
-            caller: u8,
-        },
-        RemoveAsset {
-            caller: u8,
-        },
-        ProposeAdmin {
-            caller: u8,
-            pending: u8,
-            expires_at: u8,
-        },
-        AcceptAdmin {
-            caller: u8,
-        },
-        CancelAdminRotation {
-            caller: u8,
-        },
-    }
-
-    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-    enum Rejection {
-        Unauthorized,
-        InvalidState,
-        InvalidAmount,
-        Expired,
-        NotExpired,
-        UnsupportedAsset,
-        AssetNotActive,
-        AssetNotDeprecated,
-        AssetLiabilityOutstanding,
-        AdminRotationPending,
-        AdminRotationNotFound,
-        AdminRotationExpired,
-        InvalidAdmin,
-        InvalidAdminRotationExpiry,
-    }
-
-    const ACTIONS: [Action; 29] = [
-        Action::Initialize {
-            admin_authorized: false,
-        },
-        Action::Initialize {
-            admin_authorized: true,
-        },
-        Action::Create {
-            buyer_authorized: false,
-            cap: 1,
-        },
-        Action::Create {
-            buyer_authorized: true,
-            cap: 0,
-        },
-        Action::Create {
-            buyer_authorized: true,
-            cap: 1,
-        },
-        Action::Create {
-            buyer_authorized: true,
-            cap: 2,
-        },
-        Action::Settle {
-            seller_authorized: false,
-            amount: 1,
-        },
-        Action::Settle {
-            seller_authorized: true,
-            amount: 0,
-        },
-        Action::Settle {
-            seller_authorized: true,
-            amount: 1,
-        },
-        Action::Settle {
-            seller_authorized: true,
-            amount: 2,
-        },
-        Action::Settle {
-            seller_authorized: true,
-            amount: 3,
-        },
-        Action::Cancel {
-            buyer_authorized: false,
-        },
-        Action::Cancel {
-            buyer_authorized: true,
-        },
-        Action::Reject {
-            seller_authorized: false,
-        },
-        Action::Reject {
-            seller_authorized: true,
-        },
-        Action::AdvanceToExpiry,
-        Action::Recover,
-        Action::Create {
-            buyer_authorized: false,
-            cap: 2,
-        },
-        Action::Settle {
-            seller_authorized: false,
-            amount: 2,
-        },
-        Action::DeprecateAsset { caller: 1 },
-        Action::DeprecateAsset { caller: 3 },
-        Action::RemoveAsset { caller: 1 },
-        Action::RemoveAsset { caller: 3 },
-        Action::ProposeAdmin {
-            caller: 1,
-            pending: 2,
-            expires_at: 2,
-        },
-        Action::ProposeAdmin {
-            caller: 3,
-            pending: 2,
-            expires_at: 2,
-        },
-        Action::AcceptAdmin { caller: 2 },
-        Action::AcceptAdmin { caller: 3 },
-        Action::CancelAdminRotation { caller: 1 },
-        Action::CancelAdminRotation { caller: 3 },
-    ];
-
-    fn apply(state: &mut State, action: Action) -> Result<(), Rejection> {
-        match action {
-            Action::Initialize { admin_authorized } => {
-                if !admin_authorized {
-                    return Err(Rejection::Unauthorized);
-                }
-                if state.initialized {
-                    return Err(Rejection::InvalidState);
-                }
-                state.initialized = true;
-                state.admin = 1;
-                state.asset_state = AssetState::Active;
-            }
-            Action::Create {
-                buyer_authorized,
-                cap,
-            } => {
-                if !state.initialized || state.asset_state != AssetState::Active {
-                    return Err(Rejection::UnsupportedAsset);
-                }
-                if !buyer_authorized {
-                    return Err(Rejection::Unauthorized);
-                }
-                if state.status != Status::Absent {
-                    return Err(Rejection::InvalidState);
-                }
-                if cap == 0 {
-                    return Err(Rejection::InvalidAmount);
-                }
-                state.status = Status::Open;
-                state.cap = cap;
-                state.contract_balance = cap;
-                state.liability = cap;
-                state.deposited = cap;
-            }
-            Action::Settle {
-                seller_authorized,
-                amount,
-            } => {
-                require_open(state)?;
-                if state.ledger >= EXPIRY_LEDGER {
-                    return Err(Rejection::Expired);
-                }
-                if !seller_authorized {
-                    return Err(Rejection::Unauthorized);
-                }
-                if amount == 0 || amount > state.cap {
-                    return Err(Rejection::InvalidAmount);
-                }
-                state.status = Status::Settled;
-                state.seller_paid = amount;
-                state.buyer_refunded = state.cap - amount;
-                finish_terminal_transition(state);
-            }
-            Action::Cancel { buyer_authorized } => {
-                require_open(state)?;
-                if state.ledger >= EXPIRY_LEDGER {
-                    return Err(Rejection::Expired);
-                }
-                if !buyer_authorized {
-                    return Err(Rejection::Unauthorized);
-                }
-                state.status = Status::Cancelled;
-                state.buyer_refunded = state.cap;
-                finish_terminal_transition(state);
-            }
-            Action::Reject { seller_authorized } => {
-                require_open(state)?;
-                if state.ledger >= EXPIRY_LEDGER {
-                    return Err(Rejection::Expired);
-                }
-                if !seller_authorized {
-                    return Err(Rejection::Unauthorized);
-                }
-                state.status = Status::Rejected;
-                state.buyer_refunded = state.cap;
-                finish_terminal_transition(state);
-            }
-            Action::AdvanceToExpiry => {
-                state.ledger = EXPIRY_LEDGER;
-            }
-            Action::Recover => {
-                require_open(state)?;
-                if state.ledger < EXPIRY_LEDGER {
-                    return Err(Rejection::NotExpired);
-                }
-                state.status = Status::Expired;
-                state.buyer_refunded = state.cap;
-                finish_terminal_transition(state);
-            }
-            Action::DeprecateAsset { caller } => {
-                if !state.initialized {
-                    return Err(Rejection::InvalidState);
-                }
-                if caller != state.admin {
-                    return Err(Rejection::Unauthorized);
-                }
-                if state.asset_state != AssetState::Active {
-                    return Err(Rejection::AssetNotActive);
-                }
-                state.asset_state = AssetState::Deprecated;
-            }
-            Action::RemoveAsset { caller } => {
-                if !state.initialized {
-                    return Err(Rejection::InvalidState);
-                }
-                if caller != state.admin {
-                    return Err(Rejection::Unauthorized);
-                }
-                if state.asset_state != AssetState::Deprecated {
-                    return Err(Rejection::AssetNotDeprecated);
-                }
-                if state.liability != 0 {
-                    return Err(Rejection::AssetLiabilityOutstanding);
-                }
-                state.asset_state = AssetState::Absent;
-            }
-            Action::ProposeAdmin {
-                caller,
-                pending,
-                expires_at,
-            } => {
-                if !state.initialized {
-                    return Err(Rejection::InvalidState);
-                }
-                if caller != state.admin {
-                    return Err(Rejection::Unauthorized);
-                }
-                if state.pending_admin.is_some() {
-                    return Err(Rejection::AdminRotationPending);
-                }
-                if pending == 0 || pending == state.admin {
-                    return Err(Rejection::InvalidAdmin);
-                }
-                if expires_at <= state.ledger {
-                    return Err(Rejection::InvalidAdminRotationExpiry);
-                }
-                state.pending_admin = Some(pending);
-                state.admin_rotation_expiry = expires_at;
-            }
-            Action::AcceptAdmin { caller } => {
-                if !state.initialized {
-                    return Err(Rejection::InvalidState);
-                }
-                let pending = state
-                    .pending_admin
-                    .ok_or(Rejection::AdminRotationNotFound)?;
-                if state.ledger >= state.admin_rotation_expiry {
-                    return Err(Rejection::AdminRotationExpired);
-                }
-                if caller != pending {
-                    return Err(Rejection::Unauthorized);
-                }
-                state.admin = pending;
-                state.pending_admin = None;
-                state.admin_rotation_expiry = 0;
-            }
-            Action::CancelAdminRotation { caller } => {
-                if !state.initialized {
-                    return Err(Rejection::InvalidState);
-                }
-                if caller != state.admin {
-                    return Err(Rejection::Unauthorized);
-                }
-                if state.pending_admin.is_none() {
-                    return Err(Rejection::AdminRotationNotFound);
-                }
-                state.pending_admin = None;
-                state.admin_rotation_expiry = 0;
-            }
-        }
-        Ok(())
-    }
-
-    fn require_open(state: &State) -> Result<(), Rejection> {
-        if state.status == Status::Open {
-            Ok(())
-        } else {
-            Err(Rejection::InvalidState)
-        }
-    }
-
-    fn finish_terminal_transition(state: &mut State) {
-        state.contract_balance = 0;
-        state.liability = 0;
-        state.terminal_transitions += 1;
-    }
-
-    fn invariant_violation(state: &State) -> Option<&'static str> {
-        if state.terminal_transitions > 1 {
-            return Some("more than one terminal transition succeeded");
-        }
-        if state.seller_paid > state.cap {
-            return Some("seller payout exceeded the session cap");
-        }
-        if state.other_refunded != 0 {
-            return Some("refund was assigned to an address other than the buyer");
-        }
-        if state.contract_balance + state.seller_paid + state.buyer_refunded != state.deposited {
-            return Some("deposited value was not conserved");
-        }
-        match state.status {
-            Status::Absent => {
-                if state.deposited != 0 || state.liability != 0 {
-                    return Some("absent session retained value or liability");
-                }
-            }
-            Status::Open => {
-                if state.liability != state.cap || state.contract_balance != state.cap {
-                    return Some("open-session liability did not equal escrowed cap");
-                }
-            }
-            Status::Settled | Status::Cancelled | Status::Expired | Status::Rejected => {
-                if state.liability != 0
-                    || state.contract_balance != 0
-                    || state.terminal_transitions != 1
-                {
-                    return Some("terminal session retained escrow or invalid transition count");
-                }
-            }
-        }
-        if state.asset_state == AssetState::Absent && state.initialized && state.liability != 0 {
-            return Some("removed asset retained liability");
-        }
-        if !state.initialized && (state.admin != 0 || state.asset_state != AssetState::Absent) {
-            return Some("uninitialized state had active admin or asset");
-        }
-        if state.initialized && state.admin == 0 {
-            return Some("initialized contract had no admin");
-        }
-        None
-    }
-
-    fn trace_text(trace: &[Action]) -> String {
-        trace
-            .iter()
-            .enumerate()
-            .map(|(index, action)| format!("{}. {action:?}", index + 1))
-            .collect::<Vec<_>>()
-            .join("\n")
-    }
 
     #[test]
     fn bounded_state_space_preserves_escrow_invariants() {
@@ -758,5 +764,959 @@ mod tests {
             }
         )
         .is_ok());
+    }
+
+    #[test]
+    fn counterexample_seller_rejection_and_settlement_ordering_is_mutually_exclusive() {
+        let mut base = State::default();
+        apply(
+            &mut base,
+            Action::Initialize {
+                admin_authorized: true,
+            },
+        )
+        .unwrap();
+        apply(
+            &mut base,
+            Action::Create {
+                buyer_authorized: true,
+                cap: 2,
+            },
+        )
+        .unwrap();
+
+        // Unauthorized signer attempts never mutate state or consume the terminal exit.
+        let mut reject_unauth = base;
+        assert_eq!(
+            apply(
+                &mut reject_unauth,
+                Action::Reject {
+                    seller_authorized: false,
+                }
+            ),
+            Err(Rejection::Unauthorized)
+        );
+        assert_eq!(reject_unauth, base);
+
+        let mut settle_unauth = base;
+        assert_eq!(
+            apply(
+                &mut settle_unauth,
+                Action::Settle {
+                    seller_authorized: false,
+                    amount: 1,
+                }
+            ),
+            Err(Rejection::Unauthorized)
+        );
+        assert_eq!(settle_unauth, base);
+
+        // Order A: Reject first, then Settle -> Reject wins; Settle is blocked; buyer refunded once.
+        let mut reject_then_settle = base;
+        assert_eq!(
+            apply(
+                &mut reject_then_settle,
+                Action::Reject {
+                    seller_authorized: true,
+                }
+            ),
+            Ok(())
+        );
+        assert_eq!(reject_then_settle.status, Status::Rejected);
+        assert_eq!(reject_then_settle.buyer_refunded, 2);
+        assert_eq!(reject_then_settle.seller_paid, 0);
+        assert_eq!(reject_then_settle.liability, 0);
+        assert_eq!(reject_then_settle.terminal_transitions, 1);
+
+        assert_eq!(
+            apply(
+                &mut reject_then_settle,
+                Action::Settle {
+                    seller_authorized: true,
+                    amount: 1,
+                }
+            ),
+            Err(Rejection::InvalidState)
+        );
+        assert_eq!(invariant_violation(&reject_then_settle), None);
+        assert_eq!(reject_then_settle.status, Status::Rejected);
+        assert_eq!(reject_then_settle.seller_paid, 0);
+        assert_eq!(reject_then_settle.buyer_refunded, 2);
+
+        // Order B: Settle first, then Reject -> Settle wins; Reject is blocked; payout + refund occur once.
+        let mut settle_then_reject = base;
+        assert_eq!(
+            apply(
+                &mut settle_then_reject,
+                Action::Settle {
+                    seller_authorized: true,
+                    amount: 1,
+                }
+            ),
+            Ok(())
+        );
+        assert_eq!(settle_then_reject.status, Status::Settled);
+        assert_eq!(settle_then_reject.seller_paid, 1);
+        assert_eq!(settle_then_reject.buyer_refunded, 1);
+        assert_eq!(settle_then_reject.liability, 0);
+        assert_eq!(settle_then_reject.terminal_transitions, 1);
+
+        assert_eq!(
+            apply(
+                &mut settle_then_reject,
+                Action::Reject {
+                    seller_authorized: true,
+                }
+            ),
+            Err(Rejection::InvalidState)
+        );
+        assert_eq!(invariant_violation(&settle_then_reject), None);
+        assert_eq!(settle_then_reject.status, Status::Settled);
+        assert_eq!(settle_then_reject.seller_paid, 1);
+        assert_eq!(settle_then_reject.buyer_refunded, 1);
+    }
+
+    #[test]
+    fn counterexample_buyer_cancel_and_seller_terminal_actions_are_mutually_exclusive() {
+        let mut base = State::default();
+        apply(
+            &mut base,
+            Action::Initialize {
+                admin_authorized: true,
+            },
+        )
+        .unwrap();
+        apply(
+            &mut base,
+            Action::Create {
+                buyer_authorized: true,
+                cap: 2,
+            },
+        )
+        .unwrap();
+
+        let mut unauth_cancel = base;
+        assert_eq!(
+            apply(
+                &mut unauth_cancel,
+                Action::Cancel {
+                    buyer_authorized: false,
+                }
+            ),
+            Err(Rejection::Unauthorized)
+        );
+        assert_eq!(unauth_cancel, base);
+
+        // All 4 orderings across distinct buyer (Cancel) vs seller (Settle/Reject) signers:
+        // 1. Cancel -> Settle
+        let mut c_then_s = base;
+        apply(
+            &mut c_then_s,
+            Action::Cancel {
+                buyer_authorized: true,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            apply(
+                &mut c_then_s,
+                Action::Settle {
+                    seller_authorized: true,
+                    amount: 2,
+                }
+            ),
+            Err(Rejection::InvalidState)
+        );
+        assert_eq!(c_then_s.status, Status::Cancelled);
+        assert_eq!(c_then_s.buyer_refunded, 2);
+        assert_eq!(c_then_s.seller_paid, 0);
+        assert_eq!(invariant_violation(&c_then_s), None);
+
+        // 2. Settle -> Cancel
+        let mut s_then_c = base;
+        apply(
+            &mut s_then_c,
+            Action::Settle {
+                seller_authorized: true,
+                amount: 2,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            apply(
+                &mut s_then_c,
+                Action::Cancel {
+                    buyer_authorized: true
+                }
+            ),
+            Err(Rejection::InvalidState)
+        );
+        assert_eq!(s_then_c.status, Status::Settled);
+        assert_eq!(s_then_c.seller_paid, 2);
+        assert_eq!(s_then_c.buyer_refunded, 0);
+        assert_eq!(invariant_violation(&s_then_c), None);
+
+        // 3. Cancel -> Reject
+        let mut c_then_r = base;
+        apply(
+            &mut c_then_r,
+            Action::Cancel {
+                buyer_authorized: true,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            apply(
+                &mut c_then_r,
+                Action::Reject {
+                    seller_authorized: true,
+                }
+            ),
+            Err(Rejection::InvalidState)
+        );
+        assert_eq!(c_then_r.status, Status::Cancelled);
+        assert_eq!(c_then_r.buyer_refunded, 2);
+        assert_eq!(invariant_violation(&c_then_r), None);
+
+        // 4. Reject -> Cancel
+        let mut r_then_c = base;
+        apply(
+            &mut r_then_c,
+            Action::Reject {
+                seller_authorized: true,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            apply(
+                &mut r_then_c,
+                Action::Cancel {
+                    buyer_authorized: true
+                }
+            ),
+            Err(Rejection::InvalidState)
+        );
+        assert_eq!(r_then_c.status, Status::Rejected);
+        assert_eq!(r_then_c.buyer_refunded, 2);
+        assert_eq!(invariant_violation(&r_then_c), None);
+    }
+}
+
+#[cfg(test)]
+mod cross_version_differential_tests {
+    use std::collections::{BTreeMap, BTreeSet};
+    use std::path::PathBuf;
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+    enum Version {
+        V2 = 2,
+        V3 = 3,
+    }
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+    enum ExpectedDiff {
+        InterfaceVersion,
+        InitializeActivationEvent,
+        CreateSessionDomainId,
+        SessionAuditMetadata,
+    }
+
+    impl ExpectedDiff {
+        fn all() -> BTreeSet<Self> {
+            BTreeSet::from([
+                Self::InterfaceVersion,
+                Self::InitializeActivationEvent,
+                Self::CreateSessionDomainId,
+                Self::SessionAuditMetadata,
+            ])
+        }
+    }
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum SessionStatus {
+        Open,
+        Settled,
+        Cancelled,
+        Expired,
+    }
+
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    struct SessionRecord {
+        raw_id: String,
+        handle: String,
+        max_amount: i128,
+        escrowed_amount: i128,
+        settled_amount: i128,
+        expires_at_ledger: u32,
+        status: SessionStatus,
+        ttl_extended_at: u32,
+        creation_ledger: Option<u32>,
+        finalized_ledger: Option<u32>,
+        resource_scheme_version: Option<u32>,
+        usage_scheme_version: Option<u32>,
+    }
+
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    enum EventRecord {
+        AssetActivated {
+            asset: String,
+            event_version: u32,
+        },
+        SessionCreated {
+            handle: String,
+            max_amount: i128,
+            escrowed_amount: i128,
+            expires_at_ledger: u32,
+            event_version: u32,
+        },
+        SessionSettled {
+            handle: String,
+            actual_amount: i128,
+            refunded_amount: i128,
+            event_version: u32,
+        },
+        SessionCancelled {
+            handle: String,
+            refunded_amount: i128,
+            event_version: u32,
+        },
+        SessionRecovered {
+            handle: String,
+            refunded_amount: i128,
+            expired_at_ledger: u32,
+            recovered_at_ledger: u32,
+            event_version: u32,
+        },
+    }
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum ContractError {
+        AlreadyInitialized = 1,
+        Unauthorized = 2,
+        InvalidAmount = 3,
+        ExpiredSession = 4,
+        SessionNotFound = 5,
+        SessionAlreadySettled = 6,
+        SessionCancelled = 7,
+        AmountExceedsCap = 8,
+        TtlExtensionFailed = 11,
+        UnsupportedAsset = 14,
+        NotInitialized = 20,
+        SessionExpired = 21,
+        SessionNotExpired = 22,
+    }
+
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    enum SharedOp {
+        InterfaceVersion,
+        Initialize {
+            admin_authorized: bool,
+            asset: &'static str,
+        },
+        CreateSession {
+            buyer_authorized: bool,
+            handle: &'static str,
+            asset: &'static str,
+            max_amount: i128,
+            expires_at_ledger: u32,
+        },
+        GetSession {
+            handle: &'static str,
+            cross_deployment_raw_id: Option<String>,
+        },
+        Settle {
+            seller_authorized: bool,
+            handle: &'static str,
+            actual_amount: i128,
+        },
+        Cancel {
+            buyer_authorized: bool,
+            handle: &'static str,
+        },
+        RecoverExpired {
+            handle: &'static str,
+        },
+        ExtendTtl {
+            handle: &'static str,
+        },
+        AdvanceLedger(u32),
+    }
+
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    struct SessionAuditFields {
+        creation_ledger: Option<u32>,
+        finalized_ledger: Option<u32>,
+        resource_scheme_version: Option<u32>,
+        usage_scheme_version: Option<u32>,
+    }
+
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    enum NormalizedResult {
+        Void,
+        InterfaceVersionNormalized,
+        InterfaceVersionRaw(u32),
+        Created {
+            handle: String,
+            scheme: String,
+        },
+        Session {
+            handle: String,
+            max_amount: i128,
+            escrowed_amount: i128,
+            settled_amount: i128,
+            expires_at_ledger: u32,
+            status: SessionStatus,
+            audit_fields: Option<SessionAuditFields>,
+        },
+        Ledger(u32),
+    }
+
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    struct StepObservation {
+        outcome: Result<NormalizedResult, ContractError>,
+        events: Vec<EventRecord>,
+        buyer_balance: i128,
+        seller_balance: i128,
+        contract_balance: i128,
+        liability: i128,
+        terminal_states: BTreeMap<String, SessionStatus>,
+    }
+
+    struct Runtime {
+        version: Version,
+        initialized: bool,
+        ledger: u32,
+        sequence: u64,
+        supported_assets: BTreeSet<String>,
+        buyer_balance: i128,
+        seller_balance: i128,
+        contract_balance: i128,
+        liability: i128,
+        sessions: BTreeMap<String, SessionRecord>,
+        handles: BTreeMap<String, String>,
+    }
+
+    impl Runtime {
+        fn new(version: Version, initial_buyer_balance: i128) -> Self {
+            Self {
+                version,
+                initialized: false,
+                ledger: 10,
+                sequence: 0,
+                supported_assets: BTreeSet::new(),
+                buyer_balance: initial_buyer_balance,
+                seller_balance: 0,
+                contract_balance: 0,
+                liability: 0,
+                sessions: BTreeMap::new(),
+                handles: BTreeMap::new(),
+            }
+        }
+
+        fn prefix(&self) -> &'static str {
+            match self.version {
+                Version::V2 => "v2:",
+                Version::V3 => "v3:",
+            }
+        }
+
+        fn step(
+            &mut self,
+            op: &SharedOp,
+            allowed_diffs: &BTreeSet<ExpectedDiff>,
+        ) -> Result<StepObservation, &'static str> {
+            let mut events = Vec::new();
+            let outcome = match op {
+                SharedOp::AdvanceLedger(target) => {
+                    self.ledger = *target;
+                    Ok(NormalizedResult::Ledger(self.ledger))
+                }
+                SharedOp::InterfaceVersion => {
+                    if allowed_diffs.contains(&ExpectedDiff::InterfaceVersion) {
+                        Ok(NormalizedResult::InterfaceVersionNormalized)
+                    } else {
+                        Ok(NormalizedResult::InterfaceVersionRaw(self.version as u32))
+                    }
+                }
+                SharedOp::Initialize {
+                    admin_authorized,
+                    asset,
+                } => {
+                    if !admin_authorized {
+                        Err(ContractError::Unauthorized)
+                    } else if self.initialized {
+                        Err(ContractError::AlreadyInitialized)
+                    } else {
+                        self.initialized = true;
+                        self.supported_assets.insert((*asset).to_string());
+                        if self.version == Version::V3
+                            && !allowed_diffs.contains(&ExpectedDiff::InitializeActivationEvent)
+                        {
+                            events.push(EventRecord::AssetActivated {
+                                asset: (*asset).to_string(),
+                                event_version: 3,
+                            });
+                        }
+                        Ok(NormalizedResult::Void)
+                    }
+                }
+                SharedOp::CreateSession {
+                    buyer_authorized,
+                    handle,
+                    asset,
+                    max_amount,
+                    expires_at_ledger,
+                } => {
+                    if !self.initialized {
+                        Err(ContractError::NotInitialized)
+                    } else if !buyer_authorized {
+                        Err(ContractError::Unauthorized)
+                    } else if !self.supported_assets.contains(*asset) {
+                        Err(ContractError::UnsupportedAsset)
+                    } else if *max_amount <= 0 {
+                        Err(ContractError::InvalidAmount)
+                    } else if *expires_at_ledger <= self.ledger {
+                        Err(ContractError::ExpiredSession)
+                    } else {
+                        let seq = self.sequence;
+                        self.sequence += 1;
+                        let raw_id = format!(
+                            "{}session-{seq}-{max_amount}-{expires_at_ledger}",
+                            self.prefix()
+                        );
+                        self.handles.insert((*handle).to_string(), raw_id.clone());
+                        self.buyer_balance -= *max_amount;
+                        self.contract_balance += *max_amount;
+                        self.liability += *max_amount;
+
+                        let record = SessionRecord {
+                            raw_id: raw_id.clone(),
+                            handle: (*handle).to_string(),
+                            max_amount: *max_amount,
+                            escrowed_amount: *max_amount,
+                            settled_amount: 0,
+                            expires_at_ledger: *expires_at_ledger,
+                            status: SessionStatus::Open,
+                            ttl_extended_at: self.ledger,
+                            creation_ledger: (self.version == Version::V3).then_some(self.ledger),
+                            finalized_ledger: None,
+                            resource_scheme_version: (self.version == Version::V3).then_some(1),
+                            usage_scheme_version: None,
+                        };
+                        self.sessions.insert(raw_id, record);
+                        events.push(EventRecord::SessionCreated {
+                            handle: (*handle).to_string(),
+                            max_amount: *max_amount,
+                            escrowed_amount: *max_amount,
+                            expires_at_ledger: *expires_at_ledger,
+                            event_version: 2,
+                        });
+                        let scheme = if allowed_diffs.contains(&ExpectedDiff::CreateSessionDomainId)
+                        {
+                            "DEPLOYMENT_SCOPED_SESSION_ID".to_string()
+                        } else if self.version == Version::V2 {
+                            "v2-flat-tuple-sha256".to_string()
+                        } else {
+                            "v3-domain-separated-xdr-sha256".to_string()
+                        };
+                        Ok(NormalizedResult::Created {
+                            handle: (*handle).to_string(),
+                            scheme,
+                        })
+                    }
+                }
+                SharedOp::GetSession {
+                    handle,
+                    cross_deployment_raw_id,
+                } => {
+                    let raw_id = if let Some(explicit) = cross_deployment_raw_id {
+                        if !explicit.starts_with(self.prefix()) {
+                            return Err("cross-deployment identifier reinterpretation forbidden");
+                        }
+                        explicit.clone()
+                    } else {
+                        self.handles
+                            .get(*handle)
+                            .cloned()
+                            .unwrap_or_else(|| format!("{}missing:{handle}", self.prefix()))
+                    };
+                    match self.sessions.get(&raw_id) {
+                        None => Err(ContractError::SessionNotFound),
+                        Some(s) => {
+                            let audit_fields =
+                                if allowed_diffs.contains(&ExpectedDiff::SessionAuditMetadata) {
+                                    None
+                                } else {
+                                    Some(SessionAuditFields {
+                                        creation_ledger: s.creation_ledger,
+                                        finalized_ledger: s.finalized_ledger,
+                                        resource_scheme_version: s.resource_scheme_version,
+                                        usage_scheme_version: s.usage_scheme_version,
+                                    })
+                                };
+                            Ok(NormalizedResult::Session {
+                                handle: s.handle.clone(),
+                                max_amount: s.max_amount,
+                                escrowed_amount: s.escrowed_amount,
+                                settled_amount: s.settled_amount,
+                                expires_at_ledger: s.expires_at_ledger,
+                                status: s.status,
+                                audit_fields,
+                            })
+                        }
+                    }
+                }
+                SharedOp::Settle {
+                    seller_authorized,
+                    handle,
+                    actual_amount,
+                } => {
+                    let raw_id = self
+                        .handles
+                        .get(*handle)
+                        .cloned()
+                        .unwrap_or_else(|| format!("{}missing:{handle}", self.prefix()));
+                    match self.sessions.get_mut(&raw_id) {
+                        None => Err(ContractError::SessionNotFound),
+                        Some(s) => match s.status {
+                            SessionStatus::Settled => Err(ContractError::SessionAlreadySettled),
+                            SessionStatus::Cancelled => Err(ContractError::SessionCancelled),
+                            SessionStatus::Expired => Err(ContractError::SessionExpired),
+                            SessionStatus::Open => {
+                                if self.ledger >= s.expires_at_ledger {
+                                    Err(ContractError::ExpiredSession)
+                                } else if !seller_authorized {
+                                    Err(ContractError::Unauthorized)
+                                } else if *actual_amount <= 0 {
+                                    Err(ContractError::InvalidAmount)
+                                } else if *actual_amount > s.max_amount {
+                                    Err(ContractError::AmountExceedsCap)
+                                } else {
+                                    let refund = s.escrowed_amount - *actual_amount;
+                                    s.status = SessionStatus::Settled;
+                                    s.settled_amount = *actual_amount;
+                                    s.escrowed_amount = 0;
+                                    if self.version == Version::V3 {
+                                        s.finalized_ledger = Some(self.ledger);
+                                        s.usage_scheme_version = Some(1);
+                                    }
+                                    self.contract_balance -= s.max_amount;
+                                    self.seller_balance += *actual_amount;
+                                    self.buyer_balance += refund;
+                                    self.liability -= s.max_amount;
+                                    events.push(EventRecord::SessionSettled {
+                                        handle: s.handle.clone(),
+                                        actual_amount: *actual_amount,
+                                        refunded_amount: refund,
+                                        event_version: 2,
+                                    });
+                                    Ok(NormalizedResult::Void)
+                                }
+                            }
+                        },
+                    }
+                }
+                SharedOp::Cancel {
+                    buyer_authorized,
+                    handle,
+                } => {
+                    let raw_id = self
+                        .handles
+                        .get(*handle)
+                        .cloned()
+                        .unwrap_or_else(|| format!("{}missing:{handle}", self.prefix()));
+                    match self.sessions.get_mut(&raw_id) {
+                        None => Err(ContractError::SessionNotFound),
+                        Some(s) => match s.status {
+                            SessionStatus::Settled => Err(ContractError::SessionAlreadySettled),
+                            SessionStatus::Cancelled => Err(ContractError::SessionCancelled),
+                            SessionStatus::Expired => Err(ContractError::SessionExpired),
+                            SessionStatus::Open => {
+                                if self.ledger >= s.expires_at_ledger {
+                                    Err(ContractError::ExpiredSession)
+                                } else if !buyer_authorized {
+                                    Err(ContractError::Unauthorized)
+                                } else {
+                                    let refund = s.escrowed_amount;
+                                    s.status = SessionStatus::Cancelled;
+                                    s.escrowed_amount = 0;
+                                    if self.version == Version::V3 {
+                                        s.finalized_ledger = Some(self.ledger);
+                                    }
+                                    self.contract_balance -= refund;
+                                    self.buyer_balance += refund;
+                                    self.liability -= refund;
+                                    events.push(EventRecord::SessionCancelled {
+                                        handle: s.handle.clone(),
+                                        refunded_amount: refund,
+                                        event_version: 2,
+                                    });
+                                    Ok(NormalizedResult::Void)
+                                }
+                            }
+                        },
+                    }
+                }
+                SharedOp::RecoverExpired { handle } => {
+                    let raw_id = self
+                        .handles
+                        .get(*handle)
+                        .cloned()
+                        .unwrap_or_else(|| format!("{}missing:{handle}", self.prefix()));
+                    match self.sessions.get_mut(&raw_id) {
+                        None => Err(ContractError::SessionNotFound),
+                        Some(s) => match s.status {
+                            SessionStatus::Settled => Err(ContractError::SessionAlreadySettled),
+                            SessionStatus::Cancelled => Err(ContractError::SessionCancelled),
+                            SessionStatus::Expired => Err(ContractError::SessionExpired),
+                            SessionStatus::Open => {
+                                if self.ledger < s.expires_at_ledger {
+                                    Err(ContractError::SessionNotExpired)
+                                } else {
+                                    let refund = s.escrowed_amount;
+                                    s.status = SessionStatus::Expired;
+                                    s.escrowed_amount = 0;
+                                    if self.version == Version::V3 {
+                                        s.finalized_ledger = Some(self.ledger);
+                                    }
+                                    self.contract_balance -= refund;
+                                    self.buyer_balance += refund;
+                                    self.liability -= refund;
+                                    events.push(EventRecord::SessionRecovered {
+                                        handle: s.handle.clone(),
+                                        refunded_amount: refund,
+                                        expired_at_ledger: s.expires_at_ledger,
+                                        recovered_at_ledger: self.ledger,
+                                        event_version: 2,
+                                    });
+                                    Ok(NormalizedResult::Void)
+                                }
+                            }
+                        },
+                    }
+                }
+                SharedOp::ExtendTtl { handle } => {
+                    let raw_id = self
+                        .handles
+                        .get(*handle)
+                        .cloned()
+                        .unwrap_or_else(|| format!("{}missing:{handle}", self.prefix()));
+                    match self.sessions.get_mut(&raw_id) {
+                        None => Err(ContractError::SessionNotFound),
+                        Some(s) => {
+                            if s.status != SessionStatus::Open {
+                                Err(ContractError::TtlExtensionFailed)
+                            } else {
+                                s.ttl_extended_at = self.ledger;
+                                Ok(NormalizedResult::Void)
+                            }
+                        }
+                    }
+                }
+            };
+
+            let terminal_states = self
+                .sessions
+                .values()
+                .map(|s| (s.handle.clone(), s.status))
+                .collect();
+
+            Ok(StepObservation {
+                outcome,
+                events,
+                buyer_balance: self.buyer_balance,
+                seller_balance: self.seller_balance,
+                contract_balance: self.contract_balance,
+                liability: self.liability,
+                terminal_states,
+            })
+        }
+    }
+
+    fn compare_trace(
+        name: &str,
+        ops: &[SharedOp],
+        allowed_diffs: &BTreeSet<ExpectedDiff>,
+    ) -> Result<(), String> {
+        let mut v2 = Runtime::new(Version::V2, 1_000);
+        let mut v3 = Runtime::new(Version::V3, 1_000);
+
+        for (idx, op) in ops.iter().enumerate() {
+            let obs_v2 = v2.step(op, allowed_diffs).map_err(|e| e.to_string())?;
+            let obs_v3 = v3.step(op, allowed_diffs).map_err(|e| e.to_string())?;
+            if obs_v2 != obs_v3 {
+                return Err(format!(
+                    "trace {name} step {idx} ({op:?}) diverged:\n  v2: {obs_v2:?}\n  v3: {obs_v3:?}"
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn shared_v2_and_v3_traces_match_under_documented_expected_differences() {
+        let diffs = ExpectedDiff::all();
+        let traces: &[(&str, &[SharedOp])] = &[
+            (
+                "partial_settlement_lifecycle",
+                &[
+                    SharedOp::InterfaceVersion,
+                    SharedOp::Initialize {
+                        admin_authorized: true,
+                        asset: "asset:LBT",
+                    },
+                    SharedOp::CreateSession {
+                        buyer_authorized: true,
+                        handle: "s0",
+                        asset: "asset:LBT",
+                        max_amount: 500,
+                        expires_at_ledger: 50,
+                    },
+                    SharedOp::GetSession {
+                        handle: "s0",
+                        cross_deployment_raw_id: None,
+                    },
+                    SharedOp::Settle {
+                        seller_authorized: true,
+                        handle: "s0",
+                        actual_amount: 300,
+                    },
+                    SharedOp::GetSession {
+                        handle: "s0",
+                        cross_deployment_raw_id: None,
+                    },
+                ],
+            ),
+            (
+                "buyer_cancellation_and_ttl_extension_lifecycle",
+                &[
+                    SharedOp::Initialize {
+                        admin_authorized: true,
+                        asset: "asset:LBT",
+                    },
+                    SharedOp::CreateSession {
+                        buyer_authorized: true,
+                        handle: "s0",
+                        asset: "asset:LBT",
+                        max_amount: 400,
+                        expires_at_ledger: 50,
+                    },
+                    SharedOp::ExtendTtl { handle: "s0" },
+                    SharedOp::Cancel {
+                        buyer_authorized: true,
+                        handle: "s0",
+                    },
+                    SharedOp::GetSession {
+                        handle: "s0",
+                        cross_deployment_raw_id: None,
+                    },
+                ],
+            ),
+            (
+                "expiry_recovery_and_boundary_rejections",
+                &[
+                    SharedOp::Initialize {
+                        admin_authorized: true,
+                        asset: "asset:LBT",
+                    },
+                    SharedOp::CreateSession {
+                        buyer_authorized: true,
+                        handle: "s0",
+                        asset: "asset:LBT",
+                        max_amount: 600,
+                        expires_at_ledger: 50,
+                    },
+                    SharedOp::RecoverExpired { handle: "s0" },
+                    SharedOp::AdvanceLedger(50),
+                    SharedOp::Settle {
+                        seller_authorized: true,
+                        handle: "s0",
+                        actual_amount: 100,
+                    },
+                    SharedOp::Cancel {
+                        buyer_authorized: true,
+                        handle: "s0",
+                    },
+                    SharedOp::RecoverExpired { handle: "s0" },
+                    SharedOp::RecoverExpired { handle: "s0" },
+                    SharedOp::ExtendTtl { handle: "s0" },
+                ],
+            ),
+        ];
+
+        for (name, ops) in traces {
+            compare_trace(name, ops, &diffs).expect("normalized trace must match across v2 and v3");
+        }
+    }
+
+    #[test]
+    fn unapproved_version_differences_and_cross_deployment_identifiers_fail_closed() {
+        let trace = [
+            SharedOp::InterfaceVersion,
+            SharedOp::Initialize {
+                admin_authorized: true,
+                asset: "asset:LBT",
+            },
+            SharedOp::CreateSession {
+                buyer_authorized: true,
+                handle: "s0",
+                asset: "asset:LBT",
+                max_amount: 500,
+                expires_at_ledger: 50,
+            },
+            SharedOp::GetSession {
+                handle: "s0",
+                cross_deployment_raw_id: None,
+            },
+        ];
+
+        for missing in ExpectedDiff::all() {
+            let mut partial = ExpectedDiff::all();
+            partial.remove(&missing);
+            assert!(
+                compare_trace("missing_diff_fixture", &trace, &partial).is_err(),
+                "removing expected difference {missing:?} must cause differential failure"
+            );
+        }
+
+        // Cross-deployment identifier reinterpretation must fail
+        let mut v3 = Runtime::new(Version::V3, 1_000);
+        let res = v3.step(
+            &SharedOp::GetSession {
+                handle: "s0",
+                cross_deployment_raw_id: Some("v2:session-0-500-50".to_string()),
+            },
+            &ExpectedDiff::all(),
+        );
+        assert_eq!(
+            res,
+            Err("cross-deployment identifier reinterpretation forbidden")
+        );
+    }
+
+    #[test]
+    fn committed_cross_version_trace_artifact_is_present_and_complete() {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../artifacts/interface/cross-version-behavior-traces.json");
+        let text = std::fs::read_to_string(&path).expect("cross-version trace artifact must exist");
+        for required in [
+            "\"lumenbazaar/cross-version-behavior-traces\"",
+            "\"diff-interface-version\"",
+            "\"diff-initialize-asset-policies-and-event\"",
+            "\"diff-create-session-domain-id\"",
+            "\"diff-session-audit-metadata\"",
+            "\"partial_settlement_lifecycle\"",
+            "\"exact_cap_settlement_lifecycle\"",
+            "\"buyer_cancellation_and_ttl_extension_lifecycle\"",
+            "\"expiry_recovery_lifecycle\"",
+            "\"terminal_immutability_and_double_exit_rejections\"",
+            "\"expiry_and_amount_boundary_rejections\"",
+            "\"unauthorized_and_missing_session_rejections\"",
+        ] {
+            assert!(
+                text.contains(required),
+                "cross-version-behavior-traces.json is missing {required}"
+            );
+        }
     }
 }

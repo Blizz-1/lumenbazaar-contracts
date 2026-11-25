@@ -19,6 +19,8 @@
 
 extern crate std;
 
+use std::string::ToString;
+
 use crate::{
     events,
     ids::{self, SessionIdInput, UsageCommitmentInput},
@@ -38,7 +40,7 @@ use std::{
     format,
     path::PathBuf,
     str::FromStr,
-    string::{String, ToString as _},
+    string::{String, ToString},
     vec,
     vec::Vec,
 };

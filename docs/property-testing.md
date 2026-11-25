@@ -20,7 +20,9 @@ terminal-state immutability, and isolation between both sessions and assets.
 
 The CI/default campaign is 128 cases with fixed seed
 `0x4c554d454e425a52`. Proptest shrinks a failure and prints the smallest
-reproducing input. The fixed seed makes the generated sequence reproducible.
+reproducing input. Every campaign prints its seed, bounded case count, and an
+exact replay command. Override the seed with `LUMENBAZAAR_PROPERTY_SEED` or
+`LUMENBAZAAR_POLICY_SEED`; both accept the displayed hexadecimal value.
 
 Run the CI campaign:
 
@@ -51,13 +53,13 @@ covers aggregate overflow and zero underflow.
 
 `contracts/upto-session/src/transition_test.rs` replays bounded action sequences against one real
 session and a real Stellar asset contract, with a pure model of every permitted and forbidden
-transition. Actions: settle with zero, one, half, exact-cap, or over-cap amounts; cancel; recover;
+transition. Actions: settle with zero, one, half, exact-cap, or over-cap amounts; cancel; reject; recover;
 batch recover; extend TTL; and advance the ledger to one before, at, or after expiry. After every
 step the test checks the exact error, emitted events, buyer/seller/escrow balances, the escrow
 liability, and the full stored session.
 
-Proved properties: a session finalizes at most once; cancelled sessions never settle; settled
-sessions never cancel, extend, recover, or settle again; failing steps and no-op steps (including a
+Proved properties: a session finalizes at most once; cancelled and rejected sessions never settle; settled
+sessions never cancel, reject, extend, recover, or settle again; failing steps and no-op steps (including a
 successful TTL extension) emit no event, move no tokens, and leave the session byte-for-byte equal.
 
 Two runs cover it:
@@ -65,7 +67,7 @@ Two runs cover it:
 - `generated_sequences_follow_the_transition_table`: 128 random sequences of 1 to 16 actions, fixed
   seed `0x4c554d4554524e53`.
 - `every_sequence_up_to_depth_three_follows_the_transition_table`: every 1 to 3 step sequence over a
-  six-action alphabet (258 sequences), no randomness.
+  seven-action alphabet (399 sequences), no randomness.
 
 ```bash
 cargo test -p upto-session transition_harness -- --nocapture
@@ -101,3 +103,27 @@ Fixed seed `0x4c554d4543415053`, 128 cases. Override with `LUMENBAZAAR_CAP_SEED`
 `LUMENBAZAAR_TRANSITION_CASES`, `LUMENBAZAAR_CAP_CASES`) to 128 and uses the fixed seeds, so a CI
 failure reproduces locally with the same command. These campaigns never touch a live network and do
 not change contract behavior.
+
+## Multi-Actor Liability Conservation and Refund Destination Pinning
+
+Two additional stateful property campaigns in `contracts/upto-session/src/property_test.rs` verify
+cross-transition accounting and refund-destination invariants:
+
+- `generated_mixed_histories_conserve_escrow_liabilities_across_transitions` (fixed seed
+  `0x4c554d454c494142`, override `LUMENBAZAAR_LIABILITY_SEED`): executes generated mixed histories
+  of `create_session`, `settle`, `cancel`, `reject`, `reduce_session_cap`, `extend_session_expiry`,
+  `extend_ttl`, ledger advances, `recover_expired`, and `recover_expired_batch` across three buyers,
+  three sellers, and two assets. After every step it asserts exact conservation of token balances,
+  aggregate liabilities, buyer exposures, cumulative settlements, and cumulative refunds, printing a
+  minimal replay seed on failure.
+- `refund_destination_is_pinned_to_original_buyer_across_all_refund_paths` (fixed seed
+  `0x4c554d4552454650`, override `LUMENBAZAAR_REFUND_SEED`): exercises every refunding transition
+  (`cancel`, `reject`, `reduce_session_cap`, partial `settle`, `recover_expired`, and
+  `recover_expired_batch`) interleaved with adversarial seller, admin, rotated-admin, and attacker
+  callers plus admin rotation, asset deprecation, and creation pause/resume. It proves no non-buyer
+  address ever receives a refund and that token balances and liabilities remain conserved.
+
+Both properties are also checked by bounded exhaustive exploration in `formal/escrow-model`
+(`multi_session_multi_asset_conserves_liabilities_across_transitions` and
+`adversarial_refund_redirection_cannot_divert_escrow`) and by the `transitions` target in
+`fuzz/src/session.rs`.
