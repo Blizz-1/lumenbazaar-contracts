@@ -67,7 +67,10 @@ const reviewedHashes = expectedWasmHashes();
 
 if (!dryRun) {
   requireTestnet();
+  await verifyTestnetNetwork();
   requireCleanContractSources();
+} else {
+  requireTestnet();
 }
 
 buildContracts({ dryRun });

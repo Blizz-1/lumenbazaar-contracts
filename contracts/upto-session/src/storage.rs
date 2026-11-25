@@ -184,6 +184,30 @@ pub fn remove_asset_max_session_amount(env: &Env, asset: &Address) {
         .remove(&DataKey::AssetMaxSessionAmount(asset.clone()));
 }
 
+pub fn remove_asset_min_session_amount(env: &Env, asset: &Address) {
+    env.storage()
+        .instance()
+        .remove(&DataKey::AssetMinSessionAmount(asset.clone()));
+}
+
+pub fn remove_asset_exposure_ceiling(env: &Env, asset: &Address) {
+    env.storage()
+        .instance()
+        .remove(&DataKey::AssetExposureCeiling(asset.clone()));
+}
+
+pub fn remove_buyer_exposure_ceiling(env: &Env, asset: &Address) {
+    env.storage()
+        .instance()
+        .remove(&DataKey::BuyerExposureCeiling(asset.clone()));
+}
+
+pub fn remove_seller_exposure_ceiling(env: &Env, asset: &Address) {
+    env.storage()
+        .instance()
+        .remove(&DataKey::SellerExposureCeiling(asset.clone()));
+}
+
 /// Deletes the zero-liability record of a removed asset. Callers must have
 /// checked that the recorded liability is exactly zero.
 pub fn remove_liability(env: &Env, asset: &Address) {

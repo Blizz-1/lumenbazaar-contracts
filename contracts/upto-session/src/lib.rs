@@ -80,6 +80,7 @@ impl UptoSessionContract {
             }
             supported_assets.push_back(policy.asset);
         }
+        storage::write_admin(&env, &admin);
         for policy in asset_policies.iter() {
             let probe = validation::validate_supported_asset(&env, &policy.asset, &admin)?;
             storage::write_supported_asset(&env, &policy.asset);
@@ -507,7 +508,9 @@ impl UptoSessionContract {
     // reactivated here. Every check runs before any storage write.
     pub fn activate_asset(env: Env, policy: AssetPolicy) -> Result<(), ContractError> {
         let admin = require_admin(&env)?;
-        validation::validate_asset_cap(policy.max_session_amount)?;
+        validation::validate_asset_policy(policy.min_session_amount, policy.max_session_amount)?;
+        validation::validate_exposure_ceiling(policy.max_asset_exposure)?;
+        validation::validate_exposure_ceiling(policy.max_buyer_exposure)?;
         if policy.asset == env.current_contract_address() || policy.asset == admin {
             return Err(ContractError::InvalidAsset);
         }
@@ -524,6 +527,9 @@ impl UptoSessionContract {
 
         storage::write_supported_asset(&env, &policy.asset);
         storage::write_asset_max_session_amount(&env, &policy.asset, policy.max_session_amount);
+        storage::write_asset_min_session_amount(&env, &policy.asset, policy.min_session_amount);
+        storage::write_asset_exposure_ceiling(&env, &policy.asset, policy.max_asset_exposure);
+        storage::write_buyer_exposure_ceiling(&env, &policy.asset, policy.max_buyer_exposure);
         configured.push_back(policy.asset.clone());
         storage::write_supported_assets(&env, &configured);
         storage::extend_instance_ttl(&env);
@@ -1088,6 +1094,11 @@ impl UptoSessionContract {
         storage::remove_from_supported_assets(&env, &asset);
         storage::remove_asset_status(&env, &asset);
         storage::remove_asset_max_session_amount(&env, &asset);
+        storage::remove_asset_min_session_amount(&env, &asset);
+        storage::remove_asset_exposure_ceiling(&env, &asset);
+        storage::remove_buyer_exposure_ceiling(&env, &asset);
+        storage::remove_seller_exposure_ceiling(&env, &asset);
+        storage::remove_cap_increase_proposal(&env, &asset);
         storage::remove_liability(&env, &asset);
         storage::extend_instance_ttl(&env);
         events::publish_asset_removed(&env, &asset, &admin, &reason_commitment);
